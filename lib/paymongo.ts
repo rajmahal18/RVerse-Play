@@ -17,6 +17,7 @@ export function getAppUrl() {
 
 export async function createPaymongoCheckoutSession(params: {
   amount: number;
+  credits: number;
   email: string;
   name: string;
   paymentId: string;
@@ -40,12 +41,12 @@ export async function createPaymongoCheckoutSession(params: {
             {
               currency: "PHP",
               amount: params.amount,
-              name: "CourtFlow Organizer Access",
+              name: "RVerse Play Credits",
               quantity: 1,
-              description: "30 days of organizer access",
+              description: `${params.credits} session credits`,
             },
           ],
-          description: "CourtFlow Organizer Access",
+          description: `RVerse Play ${params.credits}-credit top up`,
           success_url: `${getAppUrl()}/billing/success?paymentId=${params.paymentId}`,
           cancel_url: `${getAppUrl()}/billing/failed?paymentId=${params.paymentId}`,
           billing: {
@@ -55,7 +56,8 @@ export async function createPaymongoCheckoutSession(params: {
           metadata: {
             paymentId: params.paymentId,
             userId: params.userId,
-            plan: "ORGANIZER",
+            credits: String(params.credits),
+            type: "CREDIT_TOP_UP",
           },
         },
       },
@@ -79,12 +81,21 @@ export function verifyPaymongoSignature(payload: string, signatureHeader: string
   if (!secret) return process.env.NODE_ENV !== "production";
   if (!signatureHeader) return false;
 
-  const expected = createHmac("sha256", secret).update(payload).digest("hex");
-  const candidates = signatureHeader
-    .split(",")
-    .map((part) => part.trim())
-    .map((part) => (part.includes("=") ? part.split("=").slice(1).join("=").trim() : part))
-    .filter(Boolean);
+  const parts = Object.fromEntries(
+    signatureHeader
+      .split(",")
+      .map((part) => part.trim())
+      .filter(Boolean)
+      .map((part) => {
+        const [key, ...value] = part.split("=");
+        return [key, value.join("=")];
+      }),
+  );
+  const timestamp = parts.t;
+  if (!timestamp) return false;
+
+  const expected = createHmac("sha256", secret).update(`${timestamp}.${payload}`).digest("hex");
+  const candidates = [parts.te, parts.li].filter(Boolean);
 
   return candidates.some((candidate) => safeCompare(candidate, expected));
 }

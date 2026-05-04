@@ -2,8 +2,8 @@ import type { Metadata, Viewport } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "CourtFlow",
-  description: "Pickleball open-play rotation manager",
+  title: "RVerse Play",
+  description: "Session rotation and court management",
   manifest: "/manifest.webmanifest",
 };
 

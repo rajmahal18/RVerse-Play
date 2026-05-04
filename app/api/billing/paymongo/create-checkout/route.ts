@@ -1,37 +1,43 @@
 import { NextResponse } from "next/server";
 import { PaymentType } from "@prisma/client";
 import { getCurrentUser } from "@/lib/auth";
-import { ORGANIZER_MONTHLY_PRICE, isAdmin } from "@/lib/billing";
+import { DEFAULT_TOP_UP_CREDITS, getCreditTopUpAmount, isAdmin } from "@/lib/billing";
 import { createPaymongoCheckoutSession } from "@/lib/paymongo";
 import { prisma } from "@/lib/prisma";
 
-export async function POST() {
+export async function POST(req: Request) {
   const user = await getCurrentUser();
   if (!user) {
     return NextResponse.json({ error: "No active user." }, { status: 401 });
   }
 
   if (isAdmin(user)) {
-    return NextResponse.json({ error: "Admin accounts already have full access for testing." }, { status: 400 });
+    return NextResponse.json({ error: "Admin accounts already have unlimited session creation." }, { status: 400 });
   }
+
+  const body = await req.json().catch(() => ({}));
+  const credits = Math.max(5, Math.min(500, Number(body.credits || DEFAULT_TOP_UP_CREDITS)));
+  const amount = getCreditTopUpAmount(credits);
 
   const payment = await prisma.payment.create({
     data: {
       userId: user.id,
-      type: PaymentType.ORGANIZER_MONTHLY,
-      amount: ORGANIZER_MONTHLY_PRICE,
+      type: PaymentType.CREDIT_TOP_UP,
+      amount,
       currency: "PHP",
       status: "PENDING",
       metadata: {
+        credits,
         email: user.email,
-        plan: "ORGANIZER",
+        type: "CREDIT_TOP_UP",
       },
     },
   });
 
   try {
     const checkout = await createPaymongoCheckoutSession({
-      amount: ORGANIZER_MONTHLY_PRICE,
+      amount,
+      credits,
       email: user.email,
       name: user.name || user.email,
       paymentId: payment.id,
@@ -43,7 +49,10 @@ export async function POST() {
       data: {
         providerReferenceId: checkout.id,
         checkoutUrl: checkout.checkoutUrl,
-        metadata: checkout.raw,
+        metadata: {
+          credits,
+          checkout: checkout.raw,
+        },
       },
     });
 

@@ -35,7 +35,21 @@ type Player = {
 type MatchPlayer = { id: string; team: "A" | "B"; result: string; player: Player };
 type Match = { id: string; courtNumber: number; status: "ACTIVE" | "FINISHED"; startedAt: string; endedAt?: string | null; winningTeam?: "A" | "B" | null; players: MatchPlayer[] };
 type Relationship = { id: string; playerAId: string; playerBId: string; partnerCount: number; opponentCount: number; lastPartnerAt?: string | null };
-type Session = { id: string; name: string; courtCount: number; rotationMode: string; skillBalancing: boolean; players: Player[]; matches: Match[]; relationships: Relationship[] };
+type Session = {
+  id: string;
+  name: string;
+  joinCode: string | null;
+  courtCount: number;
+  rotationMode: string;
+  skillBalancing: boolean;
+  status: "ACTIVE" | "ENDED";
+  endedAt?: string | null;
+  viewerCanManage: boolean;
+  viewerPlayer?: Player | null;
+  players: Player[];
+  matches: Match[];
+  relationships: Relationship[];
+};
 type PreviewPlayer = Pick<Player, "id" | "name" | "skillLevel" | "gamesPlayed">;
 type QueuedMatchup = { teamA: PreviewPlayer[]; teamB: PreviewPlayer[]; score: number; reasons: string[] };
 type QueueDraft = { teamAIds: string[]; teamBIds: string[]; editing: boolean };
@@ -77,6 +91,8 @@ export default function SessionPage({ params }: { params: Promise<{ id: string }
   const [pendingPlayerId, setPendingPlayerId] = useState<string | null>(null);
   const [pendingMatchId, setPendingMatchId] = useState<string | null>(null);
   const [savingSettings, setSavingSettings] = useState(false);
+  const [endingSession, setEndingSession] = useState(false);
+  const [copiedCode, setCopiedCode] = useState(false);
   const [queuedStartingIndex, setQueuedStartingIndex] = useState<number | null>(null);
   const [summarySort, setSummarySort] = useState<{ key: SummarySortKey; direction: "asc" | "desc" }>({
     key: "wins",
@@ -91,11 +107,24 @@ export default function SessionPage({ params }: { params: Promise<{ id: string }
   async function load(id = sessionId) {
     if (!id) return;
     const res = await fetch(`/api/sessions/${id}`, { cache: "no-store" });
-    setSession(await res.json());
+    const data = await res.json();
+    if (!res.ok) {
+      setError(data?.error || "Could not open session.");
+      return;
+    }
+    setSession(data);
   }
 
   useEffect(() => {
     void load();
+  }, [sessionId]);
+
+  useEffect(() => {
+    if (!sessionId) return;
+    const interval = window.setInterval(() => {
+      void load(sessionId);
+    }, 5000);
+    return () => window.clearInterval(interval);
   }, [sessionId]);
 
   const activeMatches = useMemo(
@@ -209,6 +238,7 @@ export default function SessionPage({ params }: { params: Promise<{ id: string }
   }, [session]);
 
   async function addPlayers() {
+    if (!session?.viewerCanManage) return;
     if (!names.trim()) return;
     setBusyAction("addPlayers");
     await fetch(`/api/sessions/${sessionId}/players`, {
@@ -223,6 +253,7 @@ export default function SessionPage({ params }: { params: Promise<{ id: string }
   }
 
   async function updatePlayer(playerId: string, status: Player["status"]) {
+    if (!session?.viewerCanManage) return;
     setPendingPlayerId(playerId);
     await fetch(`/api/sessions/${sessionId}/players/${playerId}`, {
       method: "PATCH",
@@ -234,6 +265,7 @@ export default function SessionPage({ params }: { params: Promise<{ id: string }
   }
 
   async function generate() {
+    if (!session?.viewerCanManage) return;
     setBusyAction("generate");
     setError("");
     const res = await fetch(`/api/sessions/${sessionId}/generate`, { method: "POST" });
@@ -245,6 +277,7 @@ export default function SessionPage({ params }: { params: Promise<{ id: string }
   }
 
   async function startQueuedMatch(index: number) {
+    if (!session?.viewerCanManage) return;
     const draft = queueDrafts[index];
     if (!draft) return;
     setBusyAction("startQueued");
@@ -318,6 +351,7 @@ export default function SessionPage({ params }: { params: Promise<{ id: string }
   }
 
   async function finish(matchId: string, result: "A" | "B" | "DRAW") {
+    if (!session?.viewerCanManage) return;
     setPendingMatchId(matchId);
     const res = await fetch(`/api/sessions/${sessionId}/matches/${matchId}/finish`, {
       method: "POST",
@@ -337,6 +371,7 @@ export default function SessionPage({ params }: { params: Promise<{ id: string }
   }
 
   async function cancelMatch(matchId: string) {
+    if (!session?.viewerCanManage) return;
     setPendingMatchId(matchId);
     const res = await fetch(`/api/sessions/${sessionId}/matches/${matchId}/finish`, {
       method: "POST",
@@ -356,6 +391,7 @@ export default function SessionPage({ params }: { params: Promise<{ id: string }
   }
 
   async function saveSettings(formData: FormData) {
+    if (!session?.viewerCanManage) return;
     setSavingSettings(true);
     await fetch(`/api/sessions/${sessionId}`, {
       method: "PATCH",
@@ -371,7 +407,31 @@ export default function SessionPage({ params }: { params: Promise<{ id: string }
     void load();
   }
 
-  if (!session) return <div className="p-6 text-sm text-[var(--muted)]">Loading...</div>;
+  async function endSession() {
+    if (!session?.viewerCanManage) return;
+    if (!window.confirm("End this session?")) return;
+    setEndingSession(true);
+    const res = await fetch(`/api/sessions/${sessionId}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "end" }),
+    });
+    const data = await readJsonSafe(res);
+    if (!res.ok) setError(data?.error || "Could not end session.");
+    setEndingSession(false);
+    void load();
+  }
+
+  async function copyJoinCode() {
+    if (!session?.joinCode) return;
+    await navigator.clipboard.writeText(session.joinCode);
+    setCopiedCode(true);
+    window.setTimeout(() => setCopiedCode(false), 1400);
+  }
+
+  if (!session) return <div className="p-6 text-sm text-[var(--muted)]">{error || "Loading..."}</div>;
+  const sessionEnded = session.status === "ENDED";
+  const canManage = session.viewerCanManage;
 
   const tabs: { id: Tab; label: string; icon: React.ReactNode }[] = [
     { id: "queue", label: "Queue", icon: <ListOrdered size={15} /> },
@@ -379,7 +439,7 @@ export default function SessionPage({ params }: { params: Promise<{ id: string }
     { id: "players", label: "Players", icon: <Users size={15} /> },
     { id: "history", label: "History", icon: <History size={15} /> },
     { id: "summary", label: "Summary", icon: <Equal size={15} /> },
-    { id: "settings", label: "Settings", icon: <Settings size={15} /> },
+    ...(canManage ? [{ id: "settings" as const, label: "Settings", icon: <Settings size={15} /> }] : []),
   ];
 
   return (
@@ -394,7 +454,7 @@ export default function SessionPage({ params }: { params: Promise<{ id: string }
               <div className="min-w-0">
                 <div className="flex flex-wrap items-center gap-2">
                   <h1 className="truncate text-lg font-black text-[var(--text)]">{session.name}</h1>
-                  <Pill tone="green">{gameStats.label}</Pill>
+                  <Pill tone={sessionEnded ? "slate" : "green"}>{sessionEnded ? "Ended" : gameStats.label}</Pill>
                 </div>
                 <div className="mt-2 flex flex-wrap gap-1.5">
                   <Pill tone="blue">{session.courtCount} courts</Pill>
@@ -403,10 +463,20 @@ export default function SessionPage({ params }: { params: Promise<{ id: string }
                 </div>
               </div>
             </div>
-            <Button onClick={generate} disabled={busyAction !== null} loading={busyAction === "generate"} className="shrink-0">
-              <Shuffle size={16} />
-              <span className="hidden sm:inline">Generate match</span>
-            </Button>
+            <div className="flex shrink-0 gap-2">
+              {canManage && !sessionEnded && (
+                <Button onClick={generate} disabled={busyAction !== null} loading={busyAction === "generate"}>
+                  <Shuffle size={16} />
+                  <span className="hidden sm:inline">Generate match</span>
+                </Button>
+              )}
+              {canManage && !sessionEnded && (
+                <Button variant="danger" onClick={endSession} loading={endingSession}>
+                  <XCircle size={16} />
+                  <span className="hidden sm:inline">End session</span>
+                </Button>
+              )}
+            </div>
           </div>
 
           <div className="mt-3 grid grid-cols-4 gap-1.5 sm:gap-2">
@@ -439,6 +509,13 @@ export default function SessionPage({ params }: { params: Promise<{ id: string }
 
       <div className="mt-4 grid gap-4">
 
+        {sessionEnded && <div className="rounded-none border border-[var(--line)] bg-white/80 px-3 py-2 text-sm font-semibold text-[var(--muted)]">This session has ended.</div>}
+        {!canManage && session.viewerPlayer && (
+          <div className="rounded-none border border-[var(--line)] bg-white/80 px-3 py-2 text-sm font-semibold text-[var(--text)]">
+            You joined this session as {session.viewerPlayer.name}.
+          </div>
+        )}
+
         {tab === "queue" && (
           <Section title="Next Matchups" action={<Pill tone="green">{queuedMatchups.length ? `${queuedMatchups.length} queued` : "waiting pool"}</Pill>}>
             <div className="space-y-4">
@@ -460,6 +537,7 @@ export default function SessionPage({ params }: { params: Promise<{ id: string }
                       onChangePlayer={(team, slot, playerId) => updateQueueDraft(index, team, slot, playerId)}
                       onGame={() => void startQueuedMatch(index)}
                       busy={busyAction === "startQueued" && queuedStartingIndex === index}
+                      disabled={sessionEnded || !canManage}
                     />
                   ))}
                 </div>
@@ -482,6 +560,7 @@ export default function SessionPage({ params }: { params: Promise<{ id: string }
                   onPickResult={(result) => setPendingResults((current) => ({ ...current, [match.id]: result }))}
                   onFinish={finish}
                   onCancel={cancelMatch}
+                  disabled={sessionEnded || !canManage}
                 />
               ))}
               {activeMatches.length === 0 && <Empty text="No active matches. Generate the next match when a court opens." />}
@@ -506,7 +585,7 @@ export default function SessionPage({ params }: { params: Promise<{ id: string }
 
         {tab === "players" && (
           <div className="space-y-4">
-            <nav className="no-scrollbar flex gap-1.5 overflow-x-auto rounded-none border border-[var(--line)] bg-white/85 p-1.5">
+            {canManage && <nav className="no-scrollbar flex gap-1.5 overflow-x-auto rounded-none border border-[var(--line)] bg-white/85 p-1.5">
               <button
                 onClick={() => setPlayersSubTab("list")}
                 className={`flex shrink-0 items-center gap-2 rounded-none px-3 py-2 text-sm font-semibold transition ${
@@ -529,14 +608,14 @@ export default function SessionPage({ params }: { params: Promise<{ id: string }
                 <Plus size={15} />
                 Player Check-in
               </button>
-            </nav>
+            </nav>}
 
             {playersSubTab === "list" && (
               <Section title="All Players" action={<Pill tone="slate">{session.players.length} listed</Pill>}>
                 <PlayerTable
                   players={session.players}
                   onSelectPlayer={(playerId) => setSelectedPlayerId(playerId)}
-                  actions={(player) => (
+                  actions={(player) => canManage ? (
                     <>
                       {player.status !== "WAITING" && player.status !== "PLAYING" && (
                         <Button variant="soft" onClick={() => updatePlayer(player.id, "WAITING")} loading={pendingPlayerId === player.id}>
@@ -557,12 +636,12 @@ export default function SessionPage({ params }: { params: Promise<{ id: string }
                         </Button>
                       )}
                     </>
-                  )}
+                  ) : null}
                 />
               </Section>
             )}
 
-            {playersSubTab === "check-in" && (
+            {canManage && playersSubTab === "check-in" && (
               <Section title="Player Check-in" action={<Pill tone="amber">joins waiting</Pill>}>
                 <div className="space-y-4">
                   <div className="rounded-none border border-[var(--line)] bg-[linear-gradient(180deg,rgba(255,255,255,0.94)_0%,rgba(243,248,201,0.35)_100%)] p-3.5">
@@ -605,7 +684,19 @@ export default function SessionPage({ params }: { params: Promise<{ id: string }
 
         {tab === "settings" && (
           <Section title="Session Settings" action={<Pill tone="slate">live</Pill>}>
-            <form action={saveSettings} className="grid gap-4 sm:max-w-md">
+            <div className="grid gap-4 sm:max-w-md">
+              {session.joinCode && (
+                <div className="grid gap-1.5">
+                  <span className="text-xs font-bold uppercase tracking-[0.08em] text-[var(--muted)]">Session code</span>
+                  <div className="grid grid-cols-[1fr_auto] gap-2">
+                    <Input value={session.joinCode} readOnly />
+                    <Button type="button" variant="soft" onClick={copyJoinCode}>
+                      {copiedCode ? "Copied" : "Copy"}
+                    </Button>
+                  </div>
+                </div>
+              )}
+              <form action={saveSettings} className="grid gap-4">
               <Field label="Session name">
                 <Input name="name" defaultValue={session.name} />
               </Field>
@@ -625,7 +716,8 @@ export default function SessionPage({ params }: { params: Promise<{ id: string }
                 Skill balancing
               </label>
               <Button loading={savingSettings}>Save settings</Button>
-            </form>
+              </form>
+            </div>
           </Section>
         )}
       </div>
@@ -782,6 +874,7 @@ function MatchBox({
   onPickResult,
   onFinish,
   onCancel,
+  disabled = false,
 }: {
   match: Match;
   pendingResult?: "A" | "B" | "DRAW";
@@ -789,6 +882,7 @@ function MatchBox({
   onPickResult: (result: "A" | "B" | "DRAW") => void;
   onFinish: (matchId: string, result: "A" | "B" | "DRAW") => void;
   onCancel: (matchId: string) => void;
+  disabled?: boolean;
 }) {
   const teamAPlayers = match.players.filter((player) => player.team === "A").map((player) => player.player.name);
   const teamBPlayers = match.players.filter((player) => player.team === "B").map((player) => player.player.name);
@@ -798,7 +892,7 @@ function MatchBox({
       <div className="relative z-10 flex items-center justify-between gap-3 px-3.5 pb-2 pt-3">
         <div>
           <strong className="text-sm font-black text-white drop-shadow-sm">Court {match.courtNumber}</strong>
-          <div className="mt-0.5 text-[10px] font-black uppercase tracking-[0.14em] text-white/76">Live pickleball matchup</div>
+          <div className="mt-0.5 text-[10px] font-black uppercase tracking-[0.14em] text-white/76">Active match</div>
         </div>
         <div className="bg-white/18 px-2.5 py-1 text-[11px] font-black text-white ring-1 ring-white/24">Playing</div>
       </div>
@@ -828,12 +922,12 @@ function MatchBox({
 
       <div className="relative z-10 space-y-2.5 border-t border-white/32 bg-white/88 px-3.5 pb-3.5 pt-3 backdrop-blur-[1px]">
         <div className="grid grid-cols-2 gap-2">
-          <Button variant={pendingResult === "A" ? "primary" : "soft"} onClick={() => onPickResult("A")} disabled={busy}>A wins</Button>
-          <Button variant={pendingResult === "B" ? "primary" : "soft"} onClick={() => onPickResult("B")} disabled={busy}>B wins</Button>
-          <Button variant={pendingResult === "DRAW" ? "primary" : "soft"} onClick={() => onPickResult("DRAW")} disabled={busy}>Draw</Button>
-          <Button variant="danger" onClick={() => onCancel(match.id)} loading={busy}>Cancel</Button>
+          <Button variant={pendingResult === "A" ? "primary" : "soft"} onClick={() => onPickResult("A")} disabled={busy || disabled}>A wins</Button>
+          <Button variant={pendingResult === "B" ? "primary" : "soft"} onClick={() => onPickResult("B")} disabled={busy || disabled}>B wins</Button>
+          <Button variant={pendingResult === "DRAW" ? "primary" : "soft"} onClick={() => onPickResult("DRAW")} disabled={busy || disabled}>Draw</Button>
+          <Button variant="danger" onClick={() => onCancel(match.id)} disabled={disabled} loading={busy}>Cancel</Button>
         </div>
-        <Button className="w-full" onClick={() => pendingResult && onFinish(match.id, pendingResult)} disabled={!pendingResult || busy} loading={busy}>
+        <Button className="w-full" onClick={() => pendingResult && onFinish(match.id, pendingResult)} disabled={!pendingResult || busy || disabled} loading={busy}>
           Done
         </Button>
       </div>
@@ -887,6 +981,7 @@ function QueuedMatchCard({
   onChangePlayer,
   onGame,
   busy,
+  disabled = false,
 }: {
   matchup: QueuedMatchup;
   draft?: QueueDraft;
@@ -901,6 +996,7 @@ function QueuedMatchCard({
   onChangePlayer: (team: "A" | "B", slot: number, playerId: string) => void;
   onGame: () => void;
   busy: boolean;
+  disabled?: boolean;
 }) {
   const fallbackDraft = {
     teamAIds: matchup.teamA.map((player) => player.id),
@@ -965,10 +1061,10 @@ function QueuedMatchCard({
       </div>
 
       <div className="grid grid-cols-2 gap-2 border-t border-[var(--line)] bg-white px-4 py-3">
-        <Button variant="soft" onClick={onEditToggle}>
+        <Button variant="soft" onClick={onEditToggle} disabled={disabled}>
           {activeDraft.editing ? "Done editing" : "Edit"}
         </Button>
-        <Button onClick={onGame} disabled={busy}>
+        <Button onClick={onGame} disabled={busy || disabled}>
           <Play size={15} />
           Game
         </Button>

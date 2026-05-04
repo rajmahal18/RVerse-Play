@@ -77,6 +77,7 @@ enum PaymentStatus {
 enum PaymentType {
   ORGANIZER_MONTHLY
   SESSION_PASS
+  CREDIT_TOP_UP
 }
 
 model User {
@@ -88,6 +89,7 @@ model User {
   plan               UserPlan           @default(FREE)
   subscriptionStatus SubscriptionStatus @default(NONE)
   subscriptionEndsAt DateTime?
+  creditBalance      Int                @default(0)
   createdAt          DateTime           @default(now())
   updatedAt          DateTime           @updatedAt
 
@@ -101,6 +103,7 @@ model Session {
   ownerId        String?
   owner          User?         @relation(fields: [ownerId], references: [id], onDelete: SetNull)
   name           String
+  joinCode       String?       @unique
   courtCount     Int           @default(1)
   status         SessionStatus @default(ACTIVE)
   rotationMode   RotationMode  @default(FAIR_ROTATION)

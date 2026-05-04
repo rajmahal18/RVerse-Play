@@ -1,91 +1,67 @@
 import { cookies } from "next/headers";
 import type { User } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
-import { canCreateSession, getExpiredAccessPatch } from "@/lib/billing";
+import { canCreateSession } from "@/lib/billing";
+import { hashPassword, verifyPassword } from "@/lib/password";
 
-export const ACTING_USER_COOKIE = "courtflow_user_id";
+export const AUTH_COOKIE = "courtflow_user_id";
+const ADMIN_EMAIL = process.env.ADMIN_EMAIL || "admin@courtflow.test";
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || (process.env.NODE_ENV === "production" ? "" : "admin12345");
 
-const TEST_USERS = [
-  {
-    email: "admin@courtflow.test",
-    name: "Admin Tester",
-    role: "ADMIN" as const,
-    plan: "ORGANIZER" as const,
-    subscriptionStatus: "ACTIVE" as const,
-  },
-  {
-    email: "organizer@courtflow.test",
-    name: "Organizer Tester",
-    role: "USER" as const,
-    plan: "ORGANIZER" as const,
-    subscriptionStatus: "ACTIVE" as const,
-  },
-  {
-    email: "free@courtflow.test",
-    name: "Free Tester",
-    role: "USER" as const,
-    plan: "FREE" as const,
-    subscriptionStatus: "NONE" as const,
-  },
-] as const;
+export async function ensureAdminAccount() {
+  if (!ADMIN_PASSWORD) return null;
 
-function defaultExpiry() {
-  return new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
-}
-
-export async function ensureTestUsers() {
-  const activeUntil = defaultExpiry();
-
-  await Promise.all(
-    TEST_USERS.map((user) =>
-      prisma.user.upsert({
-        where: { email: user.email },
-        update: { name: user.name },
-        create: {
-          email: user.email,
-          name: user.name,
-          role: user.role,
-          plan: user.plan,
-          subscriptionStatus: user.subscriptionStatus,
-          subscriptionEndsAt: user.subscriptionStatus === "ACTIVE" ? activeUntil : null,
+  const existing = await prisma.user.findUnique({ where: { email: ADMIN_EMAIL } });
+  if (existing) {
+    if (existing.role !== "ADMIN" || !existing.passwordHash) {
+      return prisma.user.update({
+        where: { id: existing.id },
+        data: {
+          role: "ADMIN",
+          plan: "ORGANIZER",
+          subscriptionStatus: "ACTIVE",
+          passwordHash: existing.passwordHash || hashPassword(ADMIN_PASSWORD),
         },
-      }),
-    ),
-  );
+      });
+    }
+    return existing;
+  }
+
+  return prisma.user.create({
+    data: {
+      email: ADMIN_EMAIL,
+      name: "Admin",
+      role: "ADMIN",
+      plan: "ORGANIZER",
+      subscriptionStatus: "ACTIVE",
+      creditBalance: 0,
+      passwordHash: hashPassword(ADMIN_PASSWORD),
+    },
+  });
 }
 
 async function refreshUserState(user: User) {
-  const patch = getExpiredAccessPatch(user);
-  if (!patch) return user;
-
-  return prisma.user.update({
-    where: { id: user.id },
-    data: patch,
-  });
+  return user;
 }
 
 export async function getCurrentUser() {
-  await ensureTestUsers();
+  await ensureAdminAccount();
 
   const cookieStore = await cookies();
-  const userId = cookieStore.get(ACTING_USER_COOKIE)?.value;
-
-  let user =
-    (userId ? await prisma.user.findUnique({ where: { id: userId } }) : null) ??
-    (await prisma.user.findUnique({ where: { email: TEST_USERS[0].email } }));
+  const userId = cookieStore.get(AUTH_COOKIE)?.value;
+  const user = userId ? await prisma.user.findUnique({ where: { id: userId } }) : null;
 
   if (!user) return null;
+  if (!user.passwordHash) return null;
   return refreshUserState(user);
 }
 
-export async function listTestUsers() {
-  await ensureTestUsers();
-  const users = await prisma.user.findMany({
-    where: { email: { in: TEST_USERS.map((user) => user.email) } },
-    orderBy: [{ role: "asc" }, { createdAt: "asc" }],
-  });
+export async function authenticateUser(email: string, password: string) {
+  await ensureAdminAccount();
 
-  return Promise.all(users.map((user) => refreshUserState(user)));
+  const user = await prisma.user.findUnique({ where: { email: email.toLowerCase().trim() } });
+  if (!user || !verifyPassword(password, user.passwordHash)) return null;
+  return user;
 }
 
 export async function requireSessionCreator() {

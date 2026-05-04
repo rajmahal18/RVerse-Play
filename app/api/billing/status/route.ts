@@ -1,10 +1,19 @@
 import { NextResponse } from "next/server";
-import { getCurrentUser, listTestUsers } from "@/lib/auth";
-import { canCreateSession, getAccessSummary, getPlanLabel, hasActiveOrganizerAccess, normalizeRole } from "@/lib/billing";
+import { getCurrentUser } from "@/lib/auth";
+import {
+  CREDIT_PRICE,
+  DEFAULT_TOP_UP_CREDITS,
+  SESSION_CREATE_CREDIT_COST,
+  canCreateSession,
+  getAccessSummary,
+  getCreditTopUpAmount,
+  getPlanLabel,
+  normalizeRole,
+} from "@/lib/billing";
 import { prisma } from "@/lib/prisma";
 
 export async function GET() {
-  const [currentUser, users] = await Promise.all([getCurrentUser(), listTestUsers()]);
+  const currentUser = await getCurrentUser();
 
   const payments = currentUser
     ? await prisma.payment.findMany({
@@ -26,24 +35,17 @@ export async function GET() {
           planLabel: getPlanLabel(currentUser),
           subscriptionStatus: currentUser.subscriptionStatus,
           subscriptionEndsAt: currentUser.subscriptionEndsAt,
+          creditBalance: currentUser.creditBalance,
           accessSummary: getAccessSummary(currentUser),
           canCreateSession: canCreateSession(currentUser),
-          hasActiveOrganizerAccess: hasActiveOrganizerAccess(currentUser),
+          isUnlimited: currentUser.role === "ADMIN",
         }
       : null,
-    users: users.map((user) => ({
-      id: user.id,
-      name: user.name,
-      email: user.email,
-      role: user.role,
-      roleLabel: normalizeRole(user.role),
-      plan: user.plan,
-      planLabel: getPlanLabel(user),
-      subscriptionStatus: user.subscriptionStatus,
-      subscriptionEndsAt: user.subscriptionEndsAt,
-      canCreateSession: canCreateSession(user),
-    })),
+    users: [],
     payments,
-    monthlyPrice: Number(process.env.ORGANIZER_MONTHLY_PRICE || 19900),
+    creditPrice: CREDIT_PRICE,
+    defaultTopUpCredits: DEFAULT_TOP_UP_CREDITS,
+    defaultTopUpAmount: getCreditTopUpAmount(DEFAULT_TOP_UP_CREDITS),
+    sessionCreateCreditCost: SESSION_CREATE_CREDIT_COST,
   });
 }

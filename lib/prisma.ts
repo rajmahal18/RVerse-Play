@@ -40,7 +40,8 @@ function toNeonPoolerUrl(url: string) {
     const parsed = new URL(url);
     if (!parsed.hostname.includes(".neon.tech")) return url;
     if (!parsed.hostname.includes("-pooler.")) {
-      parsed.hostname = parsed.hostname.replace(".neon.tech", "-pooler.neon.tech");
+      const [endpoint, ...rest] = parsed.hostname.split(".");
+      parsed.hostname = `${endpoint}-pooler.${rest.join(".")}`;
     }
     return parsed.toString();
   } catch {

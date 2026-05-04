@@ -1,10 +1,15 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
+import { ensureSessionIsActive, requireSessionEditor } from "@/lib/sessions";
 
 type Params = { params: Promise<{ id: string }> };
 
 export async function POST(req: Request, { params }: Params) {
   const { id } = await params;
+  const editor = await requireSessionEditor(id);
+  if (!editor.ok) return NextResponse.json({ error: editor.error }, { status: editor.status });
+  const activeSession = await ensureSessionIsActive(id);
+  if (!activeSession.ok) return NextResponse.json({ error: activeSession.error }, { status: activeSession.status });
   const body = await req.json();
   const names = String(body.names || body.name || "").split("\n").map((n) => n.trim()).filter(Boolean);
   if (!names.length) return NextResponse.json({ error: "Player name is required" }, { status: 400 });

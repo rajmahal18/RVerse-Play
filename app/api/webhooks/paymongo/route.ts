@@ -1,5 +1,4 @@
 import { NextResponse } from "next/server";
-import { addDays } from "@/lib/billing";
 import { extractPaymentLookup, getWebhookEventType, verifyPaymongoSignature } from "@/lib/paymongo";
 import { prisma } from "@/lib/prisma";
 
@@ -30,8 +29,7 @@ export async function POST(req: Request) {
       return NextResponse.json({ ok: true, idempotent: true });
     }
 
-    const startsAt = new Date();
-    const endsAt = addDays(startsAt, 30);
+    const credits = getPaymentCredits(payment.metadata, lookup.metadata);
 
     await prisma.$transaction(async (tx) => {
       await tx.payment.update({
@@ -43,29 +41,15 @@ export async function POST(req: Request) {
         },
       });
 
-      await tx.subscription.create({
-        data: {
-          userId: payment.userId,
-          plan: "ORGANIZER",
-          status: "ACTIVE",
-          startsAt,
-          endsAt,
-          provider: "paymongo",
-          providerReferenceId: lookup.providerReferenceId || payment.providerReferenceId,
-        },
-      });
-
       await tx.user.update({
         where: { id: payment.userId },
         data: {
-          plan: "ORGANIZER",
-          subscriptionStatus: "ACTIVE",
-          subscriptionEndsAt: endsAt,
+          creditBalance: { increment: credits },
         },
       });
     });
 
-    return NextResponse.json({ ok: true, status: "PAID" });
+    return NextResponse.json({ ok: true, status: "PAID", credits });
   }
 
   if (eventType === "payment.failed") {
@@ -82,4 +66,21 @@ export async function POST(req: Request) {
   }
 
   return NextResponse.json({ ok: true, ignored: true, eventType });
+}
+
+function getPaymentCredits(paymentMetadata: unknown, webhookMetadata: unknown) {
+  const fromWebhook = readCredits(webhookMetadata);
+  if (fromWebhook > 0) return fromWebhook;
+
+  const fromPayment = readCredits(paymentMetadata);
+  if (fromPayment > 0) return fromPayment;
+
+  return 0;
+}
+
+function readCredits(value: unknown) {
+  if (!value || typeof value !== "object") return 0;
+  const credits = (value as { credits?: unknown }).credits;
+  const parsed = Number(credits);
+  return Number.isFinite(parsed) ? Math.max(0, Math.floor(parsed)) : 0;
 }

@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import type { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { orderedPair } from "@/lib/matchmaking";
+import { ensureSessionIsActive, requireSessionEditor } from "@/lib/sessions";
 
 type Params = { params: Promise<{ id: string; matchId: string }> };
 
@@ -30,6 +31,10 @@ async function bumpRelationship(
 export async function POST(req: Request, { params }: Params) {
   try {
     const { id, matchId } = await params;
+    const editor = await requireSessionEditor(id);
+    if (!editor.ok) return NextResponse.json({ error: editor.error }, { status: editor.status });
+    const activeSession = await ensureSessionIsActive(id);
+    if (!activeSession.ok) return NextResponse.json({ error: activeSession.error }, { status: activeSession.status });
     const body = await req.json();
     const action = body.action === "CANCEL" ? "CANCEL" : "FINISH";
     const result = body.result === "A" || body.result === "B" || body.result === "DRAW" ? body.result : null;

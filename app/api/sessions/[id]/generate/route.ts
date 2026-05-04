@@ -2,13 +2,17 @@ import { NextResponse } from "next/server";
 import type { Match, Player } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { generateMatchQueue } from "@/lib/matchmaking";
+import { ensureSessionIsActive, requireSessionEditor } from "@/lib/sessions";
 
 type Params = { params: Promise<{ id: string }> };
 
 export async function POST(_: Request, { params }: Params) {
   const { id } = await params;
-  const session = await prisma.session.findUnique({ where: { id } });
-  if (!session) return NextResponse.json({ error: "Session not found" }, { status: 404 });
+  const editor = await requireSessionEditor(id);
+  if (!editor.ok) return NextResponse.json({ error: editor.error }, { status: editor.status });
+  const activeSession = await ensureSessionIsActive(id);
+  if (!activeSession.ok) return NextResponse.json({ error: activeSession.error }, { status: activeSession.status });
+  const session = activeSession.session;
 
   const activeMatches: Match[] = await prisma.match.findMany({ where: { sessionId: id, status: "ACTIVE" } });
   if (activeMatches.length >= session.courtCount) {
