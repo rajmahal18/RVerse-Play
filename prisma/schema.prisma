@@ -1,0 +1,206 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum UserRole {
+  USER
+  ADMIN
+}
+
+enum UserPlan {
+  FREE
+  ORGANIZER
+  CLUB
+}
+
+enum SubscriptionStatus {
+  NONE
+  ACTIVE
+  PAST_DUE
+  CANCELED
+  EXPIRED
+}
+
+enum SkillLevel {
+  BEGINNER
+  INTERMEDIATE
+  ADVANCED
+}
+
+enum PlayerStatus {
+  WAITING
+  PLAYING
+  RESTING
+  LEFT
+}
+
+enum SessionStatus {
+  ACTIVE
+  ENDED
+}
+
+enum RotationMode {
+  FAIR_ROTATION
+  SKILL_BALANCED
+  WINNER_STAYS
+  LOCKED_PAIRS
+}
+
+enum MatchStatus {
+  ACTIVE
+  FINISHED
+}
+
+enum Team {
+  A
+  B
+}
+
+enum MatchResult {
+  WIN
+  LOSS
+  NONE
+}
+
+enum PaymentStatus {
+  PENDING
+  PAID
+  FAILED
+  EXPIRED
+  REFUNDED
+}
+
+enum PaymentType {
+  ORGANIZER_MONTHLY
+  SESSION_PASS
+}
+
+model User {
+  id                 String             @id @default(cuid())
+  name               String?
+  email              String             @unique
+  passwordHash       String?
+  role               UserRole           @default(USER)
+  plan               UserPlan           @default(FREE)
+  subscriptionStatus SubscriptionStatus @default(NONE)
+  subscriptionEndsAt DateTime?
+  createdAt          DateTime           @default(now())
+  updatedAt          DateTime           @updatedAt
+
+  sessions      Session[]
+  payments      Payment[]
+  subscriptions Subscription[]
+}
+
+model Session {
+  id             String        @id @default(cuid())
+  ownerId        String?
+  owner          User?         @relation(fields: [ownerId], references: [id], onDelete: SetNull)
+  name           String
+  courtCount     Int           @default(1)
+  status         SessionStatus @default(ACTIVE)
+  rotationMode   RotationMode  @default(FAIR_ROTATION)
+  skillBalancing Boolean       @default(true)
+  createdAt      DateTime      @default(now())
+  endedAt        DateTime?
+  players        Player[]
+  matches        Match[]
+  relationships  PlayerRelationship[]
+
+  @@index([ownerId])
+}
+
+model Player {
+  id            String       @id @default(cuid())
+  sessionId     String
+  session       Session      @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  name          String
+  skillLevel    SkillLevel   @default(INTERMEDIATE)
+  status        PlayerStatus @default(WAITING)
+  gamesPlayed   Int          @default(0)
+  waitStartedAt DateTime     @default(now())
+  createdAt     DateTime     @default(now())
+  leftAt        DateTime?
+  matchPlayers  MatchPlayer[]
+
+  @@index([sessionId, status])
+}
+
+model Match {
+  id           String        @id @default(cuid())
+  sessionId    String
+  session      Session       @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  courtNumber  Int
+  status       MatchStatus   @default(ACTIVE)
+  startedAt    DateTime      @default(now())
+  endedAt      DateTime?
+  winningTeam  Team?
+  players      MatchPlayer[]
+
+  @@index([sessionId, status])
+}
+
+model MatchPlayer {
+  id       String      @id @default(cuid())
+  matchId  String
+  match    Match       @relation(fields: [matchId], references: [id], onDelete: Cascade)
+  playerId String
+  player   Player      @relation(fields: [playerId], references: [id], onDelete: Cascade)
+  team     Team
+  result   MatchResult @default(NONE)
+
+  @@unique([matchId, playerId])
+}
+
+model PlayerRelationship {
+  id            String   @id @default(cuid())
+  sessionId     String
+  session       Session  @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  playerAId     String
+  playerBId     String
+  partnerCount  Int      @default(0)
+  opponentCount Int      @default(0)
+  lastPartnerAt DateTime?
+  lastOpponentAt DateTime?
+
+  @@unique([sessionId, playerAId, playerBId])
+}
+
+model Payment {
+  id                  String        @id @default(cuid())
+  userId              String
+  user                User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  type                PaymentType
+  status              PaymentStatus @default(PENDING)
+  amount              Int
+  currency            String        @default("PHP")
+  provider            String        @default("paymongo")
+  providerReferenceId String?
+  checkoutUrl         String?
+  metadata            Json?
+  createdAt           DateTime      @default(now())
+  updatedAt           DateTime      @updatedAt
+
+  @@index([userId])
+  @@index([providerReferenceId])
+}
+
+model Subscription {
+  id                  String             @id @default(cuid())
+  userId              String
+  user                User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  plan                UserPlan
+  status              SubscriptionStatus
+  startsAt            DateTime
+  endsAt              DateTime
+  provider            String?
+  providerReferenceId String?
+  createdAt           DateTime           @default(now())
+  updatedAt           DateTime           @updatedAt
+
+  @@index([userId])
+}
