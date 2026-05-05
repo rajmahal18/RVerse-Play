@@ -433,6 +433,27 @@ export default function SessionPage({ params }: { params: Promise<{ id: string }
   const sessionEnded = session.status === "ENDED";
   const canManage = session.viewerCanManage;
 
+  useEffect(() => {
+    if (!sessionId || canManage || !session?.viewerPlayer) return;
+
+    const releasePlayer = () => {
+      if (typeof navigator !== "undefined" && typeof navigator.sendBeacon === "function") {
+        navigator.sendBeacon(`/api/sessions/${sessionId}/leave`, new Blob([], { type: "application/json" }));
+        return;
+      }
+
+      void fetch(`/api/sessions/${sessionId}/leave`, {
+        method: "POST",
+        keepalive: true,
+      });
+    };
+
+    window.addEventListener("pagehide", releasePlayer);
+    return () => {
+      window.removeEventListener("pagehide", releasePlayer);
+    };
+  }, [canManage, session?.viewerPlayer, sessionId]);
+
   const tabs: { id: Tab; label: string; icon: React.ReactNode }[] = [
     { id: "queue", label: "Queue", icon: <ListOrdered size={15} /> },
     { id: "courts", label: "Courts", icon: <Play size={15} /> },

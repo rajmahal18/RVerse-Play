@@ -32,7 +32,7 @@ export async function GET(req: Request) {
       players: {
         where: { status: { not: "LEFT" } },
         orderBy: [{ status: "asc" }, { name: "asc" }],
-        select: { id: true, name: true, status: true },
+        select: { id: true, name: true, status: true, claimedByJoin: true },
       },
     },
   });
@@ -55,7 +55,7 @@ export async function GET(req: Request) {
     currentPlayerId,
     players: session.players.map((player) => ({
       ...player,
-      occupied: player.id !== currentPlayerId,
+      occupied: (player.status === "PLAYING" || player.claimedByJoin) && player.id !== currentPlayerId,
     })),
   });
 }
@@ -88,13 +88,18 @@ export async function POST(req: Request) {
       session.id,
       readCookie(req, getSessionPlayerCookieName(session.id)) ? decodeURIComponent(readCookie(req, getSessionPlayerCookieName(session.id)) || "") : undefined,
     );
-    if (currentPlayerId !== player.id) {
+    if ((player.status === "PLAYING" || player.claimedByJoin) && currentPlayerId !== player.id) {
       return NextResponse.json({ error: "That player name is already in use." }, { status: 409 });
     }
-    if (player.status === "LEFT") {
+    if (player.status === "LEFT" || !player.claimedByJoin) {
       await prisma.player.update({
         where: { id: player.id },
-        data: { status: "WAITING", leftAt: null, waitStartedAt: new Date() },
+        data: {
+          claimedByJoin: true,
+          status: player.status === "LEFT" ? "WAITING" : undefined,
+          leftAt: player.status === "LEFT" ? null : undefined,
+          waitStartedAt: player.status === "LEFT" ? new Date() : undefined,
+        },
       });
     }
   } else {
@@ -102,6 +107,7 @@ export async function POST(req: Request) {
       data: {
         sessionId: session.id,
         name,
+        claimedByJoin: true,
         status: "WAITING",
         waitStartedAt: new Date(),
       },

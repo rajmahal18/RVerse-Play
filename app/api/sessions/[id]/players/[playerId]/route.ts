@@ -23,6 +23,7 @@ export async function PATCH(req: Request, { params }: Params) {
     data: {
       name: body.name === undefined ? undefined : String(body.name).trim(),
       skillLevel: body.skillLevel,
+      claimedByJoin: status === "LEFT" ? false : undefined,
       status,
       waitStartedAt: returningToQueue ? new Date() : undefined,
       leftAt: status === "LEFT" ? new Date() : status === "WAITING" ? null : undefined,
