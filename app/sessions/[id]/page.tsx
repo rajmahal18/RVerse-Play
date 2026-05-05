@@ -236,6 +236,28 @@ export default function SessionPage({ params }: { params: Promise<{ id: string }
     const spread = max - min;
     return { min, max, spread, label: spread <= 1 ? "Excellent" : spread <= 2 ? "Good" : "Needs balancing" };
   }, [session]);
+  const canManage = session?.viewerCanManage ?? false;
+
+  useEffect(() => {
+    if (!sessionId || canManage || !session?.viewerPlayer) return;
+
+    const releasePlayer = () => {
+      if (typeof navigator !== "undefined" && typeof navigator.sendBeacon === "function") {
+        navigator.sendBeacon(`/api/sessions/${sessionId}/leave`, new Blob([], { type: "application/json" }));
+        return;
+      }
+
+      void fetch(`/api/sessions/${sessionId}/leave`, {
+        method: "POST",
+        keepalive: true,
+      });
+    };
+
+    window.addEventListener("pagehide", releasePlayer);
+    return () => {
+      window.removeEventListener("pagehide", releasePlayer);
+    };
+  }, [canManage, session?.viewerPlayer, sessionId]);
 
   async function addPlayers() {
     if (!session?.viewerCanManage) return;
@@ -431,28 +453,6 @@ export default function SessionPage({ params }: { params: Promise<{ id: string }
 
   if (!session) return <div className="p-6 text-sm text-[var(--muted)]">{error || "Loading..."}</div>;
   const sessionEnded = session.status === "ENDED";
-  const canManage = session.viewerCanManage;
-
-  useEffect(() => {
-    if (!sessionId || canManage || !session?.viewerPlayer) return;
-
-    const releasePlayer = () => {
-      if (typeof navigator !== "undefined" && typeof navigator.sendBeacon === "function") {
-        navigator.sendBeacon(`/api/sessions/${sessionId}/leave`, new Blob([], { type: "application/json" }));
-        return;
-      }
-
-      void fetch(`/api/sessions/${sessionId}/leave`, {
-        method: "POST",
-        keepalive: true,
-      });
-    };
-
-    window.addEventListener("pagehide", releasePlayer);
-    return () => {
-      window.removeEventListener("pagehide", releasePlayer);
-    };
-  }, [canManage, session?.viewerPlayer, sessionId]);
 
   const tabs: { id: Tab; label: string; icon: React.ReactNode }[] = [
     { id: "queue", label: "Queue", icon: <ListOrdered size={15} /> },

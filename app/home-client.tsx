@@ -37,6 +37,7 @@ export function HomeClient() {
   const [name, setName] = useState("");
   const [courtCount, setCourtCount] = useState(2);
   const [rotationMode, setRotationMode] = useState("FAIR_ROTATION");
+  const [hostJoinsAsPlayer, setHostJoinsAsPlayer] = useState(false);
   const [billing, setBilling] = useState<BillingStatus | null>(null);
   const [creatingSession, setCreatingSession] = useState(false);
   const [deletingSessionId, setDeletingSessionId] = useState<string | null>(null);
@@ -59,7 +60,7 @@ export function HomeClient() {
     const res = await fetch("/api/sessions", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name, courtCount, rotationMode, skillBalancing: true }),
+      body: JSON.stringify({ name, courtCount, rotationMode, skillBalancing: true, hostJoinsAsPlayer }),
     });
     const session = await res.json();
     if (!res.ok && session?.loginUrl) {
@@ -91,6 +92,8 @@ export function HomeClient() {
       { players: 0, matches: 0, courts: 0 },
     );
   }, [sessions]);
+  const hostPlayerName =
+    billing?.currentUser?.name?.trim() || billing?.currentUser?.email?.split("@")[0] || "your username";
 
   return (
     <main className="mx-auto max-w-6xl px-3 py-4 sm:px-6">
@@ -156,6 +159,21 @@ export function HomeClient() {
                         <option value="LOCKED_PAIRS">Locked Pairs</option>
                       </Select>
                     </Field>
+                    <label className="flex items-start gap-3 border border-[var(--line)] bg-white/85 px-3 py-3">
+                      <input
+                        type="checkbox"
+                        checked={hostJoinsAsPlayer}
+                        onChange={(event) => setHostJoinsAsPlayer(event.target.checked)}
+                        disabled={!billing?.currentUser}
+                        className="mt-0.5 h-4 w-4 shrink-0 accent-emerald-600"
+                      />
+                      <span className="min-w-0">
+                        <span className="block text-sm font-bold text-[var(--text)]">Join as player too</span>
+                        <span className="mt-1 block text-xs leading-5 text-[var(--muted)]">
+                          Your player name will be <span className="font-semibold text-[var(--text)]">{hostPlayerName}</span>.
+                        </span>
+                      </span>
+                    </label>
                   </div>
                 </div>
 

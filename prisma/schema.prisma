@@ -94,6 +94,7 @@ model User {
   updatedAt          DateTime           @updatedAt
 
   sessions      Session[]
+  players       Player[]
   payments      Payment[]
   subscriptions Subscription[]
 }
@@ -121,6 +122,8 @@ model Player {
   id            String       @id @default(cuid())
   sessionId     String
   session       Session      @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  userId        String?
+  user          User?        @relation(fields: [userId], references: [id], onDelete: SetNull)
   name          String
   claimedByJoin Boolean      @default(false)
   skillLevel    SkillLevel   @default(INTERMEDIATE)
@@ -132,6 +135,8 @@ model Player {
   matchPlayers  MatchPlayer[]
 
   @@index([sessionId, status])
+  @@index([userId])
+  @@unique([sessionId, userId])
 }
 
 model Match {

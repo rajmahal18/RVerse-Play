@@ -2,7 +2,11 @@ import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { getCurrentUser, requireSessionCreator } from "@/lib/auth";
 import { SESSION_CREATE_CREDIT_COST, isAdmin } from "@/lib/billing";
-import { expireOldSessions, generateUniqueJoinCode } from "@/lib/sessions";
+import { createSessionAccessToken, createSessionPlayerToken, expireOldSessions, generateUniqueJoinCode, getSessionAccessCookieName, getSessionPlayerCookieName } from "@/lib/sessions";
+
+function getUserPlayerName(user: { name: string | null; email: string }) {
+  return user.name?.trim() || user.email.split("@")[0] || "Host";
+}
 
 export async function GET() {
   await expireOldSessions();
@@ -33,6 +37,7 @@ export async function POST(req: Request) {
   const body = await req.json();
   const name = String(body.name || "Open Play").trim();
   const courtCount = Math.max(1, Math.min(12, Number(body.courtCount || 1)));
+  const hostJoinsAsPlayer = Boolean(body.hostJoinsAsPlayer);
   const joinCode = await generateUniqueJoinCode();
   try {
     const session = await prisma.$transaction(async (tx) => {
@@ -55,11 +60,43 @@ export async function POST(req: Request) {
           courtCount,
           rotationMode: body.rotationMode || "FAIR_ROTATION",
           skillBalancing: Boolean(body.skillBalancing ?? true),
+          players: hostJoinsAsPlayer
+            ? {
+                create: {
+                  userId: user.id,
+                  name: getUserPlayerName(user),
+                  skillLevel: "INTERMEDIATE",
+                  status: "WAITING",
+                  waitStartedAt: new Date(),
+                },
+              }
+            : undefined,
+        },
+        include: {
+          players: {
+            where: { userId: user.id },
+            select: { id: true },
+          },
         },
       });
     });
 
-    return NextResponse.json(session);
+    const response = NextResponse.json(session);
+    response.cookies.set(getSessionAccessCookieName(session.id), createSessionAccessToken(session.id, joinCode), {
+      httpOnly: true,
+      sameSite: "lax",
+      path: "/",
+      maxAge: 60 * 60 * 12,
+    });
+    if (hostJoinsAsPlayer && session.players[0]?.id) {
+      response.cookies.set(getSessionPlayerCookieName(session.id), createSessionPlayerToken(session.id, session.players[0].id), {
+        httpOnly: true,
+        sameSite: "lax",
+        path: "/",
+        maxAge: 60 * 60 * 12,
+      });
+    }
+    return response;
   } catch (error) {
     if (error instanceof Error && error.message === "INSUFFICIENT_CREDITS") {
       return NextResponse.json(

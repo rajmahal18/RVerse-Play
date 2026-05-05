@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
+import { getCurrentUser } from "@/lib/auth";
 import {
   createSessionAccessToken,
   createSessionPlayerToken,
@@ -32,7 +33,7 @@ export async function GET(req: Request) {
       players: {
         where: { status: { not: "LEFT" } },
         orderBy: [{ status: "asc" }, { name: "asc" }],
-        select: { id: true, name: true, status: true, claimedByJoin: true },
+        select: { id: true, name: true, status: true, claimedByJoin: true, userId: true },
       },
     },
   });
@@ -55,7 +56,7 @@ export async function GET(req: Request) {
     currentPlayerId,
     players: session.players.map((player) => ({
       ...player,
-      occupied: (player.status === "PLAYING" || player.claimedByJoin) && player.id !== currentPlayerId,
+      occupied: (player.status === "PLAYING" || player.claimedByJoin || Boolean(player.userId)) && player.id !== currentPlayerId,
     })),
   });
 }
@@ -79,6 +80,7 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "Session has ended." }, { status: 410 });
   }
 
+  const currentUser = await getCurrentUser();
   let joinedPlayerId = playerId;
 
   if (playerId) {
@@ -88,14 +90,17 @@ export async function POST(req: Request) {
       session.id,
       readCookie(req, getSessionPlayerCookieName(session.id)) ? decodeURIComponent(readCookie(req, getSessionPlayerCookieName(session.id)) || "") : undefined,
     );
+    if (player.userId && player.userId !== currentUser?.id) {
+      return NextResponse.json({ error: "That player name is reserved by the session host." }, { status: 409 });
+    }
     if ((player.status === "PLAYING" || player.claimedByJoin) && currentPlayerId !== player.id) {
       return NextResponse.json({ error: "That player name is already in use." }, { status: 409 });
     }
-    if (player.status === "LEFT" || !player.claimedByJoin) {
+    if (player.status === "LEFT" || (!player.claimedByJoin && !player.userId)) {
       await prisma.player.update({
         where: { id: player.id },
         data: {
-          claimedByJoin: true,
+          claimedByJoin: player.userId ? undefined : true,
           status: player.status === "LEFT" ? "WAITING" : undefined,
           leftAt: player.status === "LEFT" ? null : undefined,
           waitStartedAt: player.status === "LEFT" ? new Date() : undefined,

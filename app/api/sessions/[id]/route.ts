@@ -31,7 +31,9 @@ export async function GET(_: Request, { params }: Params) {
     },
   });
   if (!session) return NextResponse.json({ error: "Session not found" }, { status: 404 });
-  const viewerPlayer = currentPlayerId ? session.players.find((player) => player.id === currentPlayerId) : null;
+  const viewerPlayer =
+    (currentPlayerId ? session.players.find((player) => player.id === currentPlayerId) : null) ??
+    (access.user ? session.players.find((player) => player.userId === access.user?.id) ?? null : null);
   return NextResponse.json({ ...session, viewerCanManage: access.canManage, viewerPlayer });
 }
 
