@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { AUTH_COOKIE, ensureAdminAccount } from "@/lib/auth";
+import { AUTH_COOKIE, AUTH_COOKIE_MAX_AGE_SECONDS, ensureAdminAccount } from "@/lib/auth";
 import { hashPassword } from "@/lib/password";
 import { prisma } from "@/lib/prisma";
 
@@ -46,7 +46,7 @@ export async function POST(req: Request) {
     httpOnly: true,
     sameSite: "lax",
     path: "/",
-    maxAge: 60 * 60 * 24 * 30,
+    maxAge: AUTH_COOKIE_MAX_AGE_SECONDS,
   });
   return response;
 }

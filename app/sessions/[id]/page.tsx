@@ -134,13 +134,15 @@ export default function SessionPage({ params }: { params: Promise<{ id: string }
   const [skillLevel, setSkillLevel] = useState("INTERMEDIATE");
   const [error, setError] = useState("");
   const [busyAction, setBusyAction] = useState<null | "addPlayers" | "generate" | "startQueued">(null);
-  const [pendingResults, setPendingResults] = useState<Record<string, "A" | "B" | "DRAW" | undefined>>({});
   const [selectedPlayerId, setSelectedPlayerId] = useState<string | null>(null);
   const [playersSubTab, setPlayersSubTab] = useState<"list" | "check-in">("list");
   const [pendingPlayerId, setPendingPlayerId] = useState<string | null>(null);
+  const [confirmPlayerAction, setConfirmPlayerAction] = useState<{ player: Player; status: Player["status"] } | null>(null);
+  const [resultMatch, setResultMatch] = useState<Match | null>(null);
   const [pendingMatchId, setPendingMatchId] = useState<string | null>(null);
   const [savingSettings, setSavingSettings] = useState(false);
   const [endingSession, setEndingSession] = useState(false);
+  const [showGenerateChoice, setShowGenerateChoice] = useState(false);
   const [copiedCode, setCopiedCode] = useState(false);
   const [queuedStartingIndex, setQueuedStartingIndex] = useState<number | null>(null);
   const [savingPairs, setSavingPairs] = useState(false);
@@ -302,6 +304,8 @@ export default function SessionPage({ params }: { params: Promise<{ id: string }
     return { min, max, spread, label: spread <= 1 ? "Excellent" : spread <= 2 ? "Good" : "Needs balancing" };
   }, [session]);
   const canManage = session?.viewerCanManage ?? false;
+  const openCourtCount = Math.max(0, (session?.courtCount ?? 0) - activeMatches.length);
+  const openCourtQueueCount = Math.min(openCourtCount, Math.floor(waiting.length / 4));
 
   useEffect(() => {
     if (!sessionId || canManage || !session?.viewerPlayer) return;
@@ -351,11 +355,23 @@ export default function SessionPage({ params }: { params: Promise<{ id: string }
     void load();
   }
 
-  async function generate() {
+  async function confirmUpdatePlayer() {
+    if (!confirmPlayerAction) return;
+    const action = confirmPlayerAction;
+    setConfirmPlayerAction(null);
+    await updatePlayer(action.player.id, action.status);
+  }
+
+  async function generate(mode: "NEXT" | "OPEN" = "NEXT") {
     if (!session?.viewerCanManage) return;
+    setShowGenerateChoice(false);
     setBusyAction("generate");
     setError("");
-    const res = await fetch(`/api/sessions/${sessionId}/generate`, { method: "POST" });
+    const res = await fetch(`/api/sessions/${sessionId}/generate`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mode }),
+    });
     const data = await readJsonSafe(res);
     if (!res.ok) setError(data?.error || "Could not generate match");
     setBusyAction(null);
@@ -474,6 +490,7 @@ export default function SessionPage({ params }: { params: Promise<{ id: string }
   async function finish(matchId: string, result: "A" | "B" | "DRAW") {
     if (!session?.viewerCanManage) return;
     setPendingMatchId(matchId);
+    setResultMatch(null);
     const res = await fetch(`/api/sessions/${sessionId}/matches/${matchId}/finish`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -485,7 +502,6 @@ export default function SessionPage({ params }: { params: Promise<{ id: string }
       setPendingMatchId(null);
       return;
     }
-    setPendingResults((current) => ({ ...current, [matchId]: undefined }));
     setError("");
     setPendingMatchId(null);
     void load();
@@ -494,6 +510,7 @@ export default function SessionPage({ params }: { params: Promise<{ id: string }
   async function cancelMatch(matchId: string) {
     if (!session?.viewerCanManage) return;
     setPendingMatchId(matchId);
+    setResultMatch(null);
     const res = await fetch(`/api/sessions/${sessionId}/matches/${matchId}/finish`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -505,7 +522,6 @@ export default function SessionPage({ params }: { params: Promise<{ id: string }
       setPendingMatchId(null);
       return;
     }
-    setPendingResults((current) => ({ ...current, [matchId]: undefined }));
     setError("");
     setPendingMatchId(null);
     void load();
@@ -564,55 +580,55 @@ export default function SessionPage({ params }: { params: Promise<{ id: string }
   ];
 
   return (
-    <main className="mx-auto max-w-6xl px-3 pb-20 sm:px-6">
-      <header className="sticky top-0 z-20 -mx-3 border-b border-white/60 bg-[rgba(246,247,241,0.9)] px-3 py-3 backdrop-blur-md sm:-mx-6 sm:px-6">
-        <div className="rounded-none border border-[var(--line)] bg-[linear-gradient(135deg,rgba(255,255,255,0.94)_0%,rgba(239,246,235,0.9)_58%,rgba(243,248,201,0.65)_100%)] px-3 py-3 shadow-[0_18px_36px_rgba(18,41,28,0.08)] sm:px-4">
-          <div className="flex items-start justify-between gap-3">
-            <div className="flex min-w-0 items-start gap-3">
-              <a href="/" className="mt-0.5 grid h-10 w-10 shrink-0 place-items-center rounded-none border border-[var(--line)] bg-white/90 text-[var(--text)] shadow-[0_8px_20px_rgba(18,41,28,0.06)]">
-                <ArrowLeft size={17} />
+    <main className="mx-auto max-w-6xl px-2 pb-20 sm:px-6">
+      <header className="sticky top-0 z-20 -mx-2 border-b border-white/60 bg-[rgba(246,247,241,0.92)] px-2 py-1.5 backdrop-blur-md sm:-mx-6 sm:px-6 sm:py-2">
+        <div className="rounded-none border border-[var(--line)] bg-[linear-gradient(135deg,rgba(255,255,255,0.94)_0%,rgba(239,246,235,0.9)_58%,rgba(243,248,201,0.65)_100%)] px-2 py-2 shadow-[0_12px_24px_rgba(18,41,28,0.07)] sm:px-3">
+          <div className="grid grid-cols-[1fr_auto] items-start gap-2">
+            <div className="flex min-w-0 items-start gap-2">
+              <a href="/" className="grid h-8 w-8 shrink-0 place-items-center rounded-none border border-[var(--line)] bg-white/90 text-[var(--text)] shadow-[0_6px_14px_rgba(18,41,28,0.05)]">
+                <ArrowLeft size={15} />
               </a>
               <div className="min-w-0">
-                <div className="flex flex-wrap items-center gap-2">
-                  <h1 className="truncate text-lg font-black text-[var(--text)]">{session.name}</h1>
+                <div className="flex min-w-0 flex-wrap items-center gap-1.5">
+                  <h1 className="max-w-[150px] truncate text-sm font-black text-[var(--text)] sm:max-w-none sm:text-base">{session.name}</h1>
                   <Pill tone={sessionEnded ? "slate" : "green"}>{sessionEnded ? "Ended" : gameStats.label}</Pill>
                 </div>
-                <div className="mt-2 flex flex-wrap gap-1.5">
+                <div className="mt-1 flex flex-wrap gap-1">
                   <Pill tone="blue">{session.courtCount} courts</Pill>
                   <Pill tone="amber">{waiting.length} waiting</Pill>
                   <Pill tone="purple">{session.rotationMode.replaceAll("_", " ").toLowerCase()}</Pill>
                 </div>
               </div>
             </div>
-            <div className="flex shrink-0 gap-2">
+            <div className="flex shrink-0 gap-1.5">
               {canManage && !sessionEnded && (
-                <Button onClick={generate} disabled={busyAction !== null} loading={busyAction === "generate"}>
-                  <Shuffle size={16} />
+                <Button className="min-h-8 px-2 py-1.5 sm:px-3" onClick={() => setShowGenerateChoice(true)} disabled={busyAction !== null} loading={busyAction === "generate"}>
+                  <Shuffle size={14} />
                   <span className="hidden sm:inline">Generate match</span>
                 </Button>
               )}
               {canManage && !sessionEnded && (
-                <Button variant="danger" onClick={endSession} loading={endingSession}>
-                  <XCircle size={16} />
+                <Button className="min-h-8 px-2 py-1.5 sm:px-3" variant="danger" onClick={endSession} loading={endingSession}>
+                  <XCircle size={14} />
                   <span className="hidden sm:inline">End session</span>
                 </Button>
               )}
             </div>
           </div>
 
-          <div className="mt-3 grid grid-cols-4 gap-1.5 sm:gap-2">
+          <div className="mt-2 grid grid-cols-4 gap-1">
             <TopMetric label="Waiting" value={waiting.length} tone="amber" />
             <TopMetric label="Playing" value={playingCount} tone="blue" />
             <TopMetric label="Resting" value={restingCount} tone="green" />
             <TopMetric label="Spread" value={gameStats.spread} tone="slate" />
           </div>
 
-          <nav className="no-scrollbar mt-3 flex gap-1.5 overflow-x-auto rounded-none border border-[var(--line)] bg-white/85 p-1.5">
+          <nav className="no-scrollbar mt-2 flex gap-1 overflow-x-auto rounded-none border border-[var(--line)] bg-white/85 p-1">
             {tabs.map((item) => (
               <button
                 key={item.id}
                 onClick={() => setTab(item.id)}
-                className={`flex shrink-0 items-center gap-2 rounded-none px-3 py-2 text-sm font-semibold transition ${
+                className={`flex min-h-8 shrink-0 items-center gap-1.5 rounded-none px-2.5 py-1.5 text-xs font-semibold transition sm:text-sm ${
                   tab === item.id
                     ? "bg-[linear-gradient(180deg,#27b27f_0%,#1f9d72_100%)] text-white shadow-[0_10px_24px_rgba(31,157,114,0.2)]"
                     : "text-[var(--muted)] hover:bg-[var(--bg-soft)] hover:text-[var(--text)]"
@@ -626,9 +642,9 @@ export default function SessionPage({ params }: { params: Promise<{ id: string }
         </div>
       </header>
 
-      {error && <div className="mt-3 rounded-none border border-red-200 bg-red-50 px-3 py-2 text-sm font-semibold text-red-700">{error}</div>}
+      {error && <div className="mt-2 rounded-none border border-red-200 bg-red-50 px-3 py-2 text-sm font-semibold text-red-700">{error}</div>}
 
-      <div className="mt-4 grid gap-4">
+      <div className="mt-3 grid gap-3">
 
         {sessionEnded && <div className="rounded-none border border-[var(--line)] bg-white/80 px-3 py-2 text-sm font-semibold text-[var(--muted)]">This session has ended.</div>}
         {!canManage && session.viewerPlayer && (
@@ -639,14 +655,14 @@ export default function SessionPage({ params }: { params: Promise<{ id: string }
 
         {tab === "queue" && (
           <Section title="Next Matchups" action={<Pill tone="green">{queuedMatchups.length ? `${queuedMatchups.length} queued` : "waiting pool"}</Pill>}>
-            <div className="space-y-4">
+            <div className="space-y-2.5">
               {session.rotationMode === "LOCKED_PAIRS" && waitingUnpairedCount > 0 && (
-                <div className="border border-amber-100 bg-amber-50 px-3 py-2 text-sm font-semibold text-amber-800">
-                  {waitingUnpairedCount} waiting player{waitingUnpairedCount === 1 ? "" : "s"} need saved pairs before they can be queued.
+                <div className="border border-amber-100 bg-amber-50 px-2.5 py-1.5 text-xs font-semibold text-amber-800">
+                  {waitingUnpairedCount} waiting need saved pairs.
                 </div>
               )}
               {queuedMatchups.length ? (
-                <div className="space-y-3">
+                <div className="space-y-2.5">
                   {queuedMatchups.map((matchup, index) => (
                     <QueuedMatchCard
                       key={`${matchup.teamA.map((player) => player.id).join("-")}-${index}`}
@@ -681,11 +697,8 @@ export default function SessionPage({ params }: { params: Promise<{ id: string }
                 <MatchBox
                   key={match.id}
                   match={match}
-                  pendingResult={pendingResults[match.id]}
                   busy={pendingMatchId === match.id}
-                  onPickResult={(result) => setPendingResults((current) => ({ ...current, [match.id]: result }))}
-                  onFinish={finish}
-                  onCancel={cancelMatch}
+                  onDecide={() => setResultMatch(match)}
                   disabled={sessionEnded || !canManage}
                 />
               ))}
@@ -710,11 +723,11 @@ export default function SessionPage({ params }: { params: Promise<{ id: string }
         )}
 
         {tab === "players" && (
-          <div className="space-y-4">
-            {canManage && <nav className="no-scrollbar flex gap-1.5 overflow-x-auto rounded-none border border-[var(--line)] bg-white/85 p-1.5">
+          <div className="space-y-3">
+            {canManage && <nav className="no-scrollbar flex gap-1 overflow-x-auto rounded-none border border-[var(--line)] bg-white/85 p-1">
               <button
                 onClick={() => setPlayersSubTab("list")}
-                className={`flex shrink-0 items-center gap-2 rounded-none px-3 py-2 text-sm font-semibold transition ${
+                className={`flex min-h-8 shrink-0 items-center gap-1.5 rounded-none px-2.5 py-1.5 text-xs font-semibold transition sm:text-sm ${
                   playersSubTab === "list"
                     ? "bg-[linear-gradient(180deg,#27b27f_0%,#1f9d72_100%)] text-white shadow-[0_10px_24px_rgba(31,157,114,0.2)]"
                     : "text-[var(--muted)] hover:bg-[var(--bg-soft)] hover:text-[var(--text)]"
@@ -725,7 +738,7 @@ export default function SessionPage({ params }: { params: Promise<{ id: string }
               </button>
               <button
                 onClick={() => setPlayersSubTab("check-in")}
-                className={`flex shrink-0 items-center gap-2 rounded-none px-3 py-2 text-sm font-semibold transition ${
+                className={`flex min-h-8 shrink-0 items-center gap-1.5 rounded-none px-2.5 py-1.5 text-xs font-semibold transition sm:text-sm ${
                   playersSubTab === "check-in"
                     ? "bg-[linear-gradient(180deg,#27b27f_0%,#1f9d72_100%)] text-white shadow-[0_10px_24px_rgba(31,157,114,0.2)]"
                     : "text-[var(--muted)] hover:bg-[var(--bg-soft)] hover:text-[var(--text)]"
@@ -744,22 +757,19 @@ export default function SessionPage({ params }: { params: Promise<{ id: string }
                   actions={(player) => canManage ? (
                     <>
                       {player.status !== "WAITING" && player.status !== "PLAYING" && (
-                        <Button variant="soft" onClick={() => updatePlayer(player.id, "WAITING")} loading={pendingPlayerId === player.id}>
+                        <IconActionButton label="Return to queue" onClick={() => setConfirmPlayerAction({ player, status: "WAITING" })} loading={pendingPlayerId === player.id}>
                           <TimerReset size={14} />
-                          Return
-                        </Button>
+                        </IconActionButton>
                       )}
                       {player.status === "WAITING" && (
-                        <Button variant="soft" onClick={() => updatePlayer(player.id, "RESTING")} loading={pendingPlayerId === player.id}>
+                        <IconActionButton label="Move to rest" onClick={() => setConfirmPlayerAction({ player, status: "RESTING" })} loading={pendingPlayerId === player.id}>
                           <Coffee size={14} />
-                          Rest
-                        </Button>
+                        </IconActionButton>
                       )}
                       {player.status !== "LEFT" && player.status !== "PLAYING" && (
-                        <Button variant="danger" onClick={() => updatePlayer(player.id, "LEFT")} loading={pendingPlayerId === player.id}>
+                        <IconActionButton label="Mark left" tone="danger" onClick={() => setConfirmPlayerAction({ player, status: "LEFT" })} loading={pendingPlayerId === player.id}>
                           <LogOut size={14} />
-                          Left
-                        </Button>
+                        </IconActionButton>
                       )}
                     </>
                   ) : null}
@@ -868,6 +878,33 @@ export default function SessionPage({ params }: { params: Promise<{ id: string }
           onClose={() => setSelectedPlayerId(null)}
         />
       )}
+      {confirmPlayerAction && (
+        <ConfirmPlayerActionModal
+          player={confirmPlayerAction.player}
+          status={confirmPlayerAction.status}
+          busy={pendingPlayerId === confirmPlayerAction.player.id}
+          onCancel={() => setConfirmPlayerAction(null)}
+          onConfirm={() => void confirmUpdatePlayer()}
+        />
+      )}
+      {showGenerateChoice && (
+        <GenerateChoiceModal
+          openCourtCount={openCourtCount}
+          availableMatchCount={openCourtQueueCount}
+          busy={busyAction === "generate"}
+          onCancel={() => setShowGenerateChoice(false)}
+          onGenerate={generate}
+        />
+      )}
+      {resultMatch && (
+        <MatchResultModal
+          match={resultMatch}
+          busy={pendingMatchId === resultMatch.id}
+          onCancel={() => setResultMatch(null)}
+          onFinish={finish}
+          onVoid={cancelMatch}
+        />
+      )}
     </main>
   );
 }
@@ -898,9 +935,9 @@ function TopMetric({
   } as const;
 
   return (
-    <div className={`rounded-none border border-white/70 px-2 py-2 shadow-[0_10px_20px_rgba(18,41,28,0.05)] sm:px-3 sm:py-2.5 ${tones[tone]}`}>
-      <div className="text-base font-black sm:text-lg">{value}</div>
-      <div className="mt-0.5 text-[10px] font-semibold uppercase tracking-[0.06em] sm:text-[11px] sm:tracking-[0.07em]">{label}</div>
+    <div className={`rounded-none border border-white/70 px-1.5 py-1.5 shadow-[0_8px_16px_rgba(18,41,28,0.04)] sm:px-2 sm:py-2 ${tones[tone]}`}>
+      <div className="text-sm font-black leading-none sm:text-base">{value}</div>
+      <div className="mt-0.5 text-[9px] font-semibold uppercase leading-tight tracking-[0.04em] sm:text-[10px]">{label}</div>
     </div>
   );
 }
@@ -985,24 +1022,24 @@ function PlayerTable({
             key={player.id}
             type="button"
             onClick={() => onSelectPlayer(player.id)}
-            className="grid w-full gap-3 px-4 py-3.5 text-left transition hover:bg-white/70 sm:grid-cols-[1fr_auto] sm:items-center"
+            className="grid w-full grid-cols-[1fr_auto] items-center gap-2 px-2.5 py-2 text-left transition hover:bg-white/70 sm:px-3"
           >
             <div className="min-w-0">
-              <div className="flex flex-wrap items-center gap-2">
+              <div className="flex min-w-0 flex-wrap items-center gap-1.5">
                 <strong className="truncate text-sm font-black text-[var(--text)]">{player.name}</strong>
                 <Pill tone={statusTone[player.status]}>{player.status.toLowerCase()}</Pill>
                 <Pill>{skillLabel[player.skillLevel]}</Pill>
               </div>
-              <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs font-medium text-[var(--muted)]">
-                <span>{player.gamesPlayed} games played</span>
+              <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] font-medium leading-4 text-[var(--muted)]">
+                <span>{player.gamesPlayed} games</span>
                 <span className="inline-flex min-w-0 items-center gap-1.5">
-                  <Clock3 size={13} className="shrink-0 text-emerald-700" />
+                  <Clock3 size={11} className="shrink-0 text-emerald-700" />
                   <span>Arrived {formatClockTime(player.createdAt)}</span>
                 </span>
                 <span>{getPlayerStatusTimeLabel(player)}</span>
               </div>
             </div>
-            <div className="flex flex-wrap gap-2" onClick={(event) => event.stopPropagation()}>{actions(player)}</div>
+            <div className="flex shrink-0 gap-1" onClick={(event) => event.stopPropagation()}>{actions(player)}</div>
           </button>
         ))}
       </div>
@@ -1010,37 +1047,217 @@ function PlayerTable({
   );
 }
 
+function IconActionButton({
+  label,
+  tone = "soft",
+  loading,
+  children,
+  onClick,
+}: {
+  label: string;
+  tone?: "soft" | "danger";
+  loading?: boolean;
+  children: React.ReactNode;
+  onClick: () => void;
+}) {
+  const toneClass =
+    tone === "danger"
+      ? "border-red-200 bg-red-50 text-red-700 hover:bg-red-100"
+      : "border-[var(--line)] bg-white/90 text-[var(--muted)] hover:bg-[var(--bg-soft)] hover:text-[var(--text)]";
+
+  return (
+    <button
+      type="button"
+      aria-label={label}
+      title={label}
+      onClick={onClick}
+      disabled={loading}
+      className={`inline-grid h-8 w-8 place-items-center rounded-none border text-sm transition disabled:cursor-not-allowed disabled:opacity-50 ${toneClass}`}
+    >
+      {loading ? <span className="h-3.5 w-3.5 animate-spin border-2 border-current border-r-transparent" aria-hidden="true" /> : children}
+    </button>
+  );
+}
+
+function ConfirmPlayerActionModal({
+  player,
+  status,
+  busy,
+  onCancel,
+  onConfirm,
+}: {
+  player: Player;
+  status: Player["status"];
+  busy: boolean;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  const copy = {
+    WAITING: { title: "Return player?", body: `${player.name} will go back to the waiting queue.`, action: "Return" },
+    RESTING: { title: "Move to rest?", body: `${player.name} will be moved out of the waiting queue.`, action: "Rest" },
+    LEFT: { title: "Mark as left?", body: `${player.name} will be removed from active player rotation.`, action: "Mark left" },
+    PLAYING: { title: "Update player?", body: `${player.name} will be updated.`, action: "Update" },
+  }[status];
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-end bg-[rgba(17,24,39,0.2)] p-0 sm:items-center sm:justify-center sm:p-4" onClick={onCancel}>
+      <div
+        className="w-full border border-[var(--line)] bg-white px-4 py-4 shadow-[0_18px_44px_rgba(18,41,28,0.18)] sm:max-w-sm"
+        onClick={(event) => event.stopPropagation()}
+      >
+        <h3 className="text-base font-black text-[var(--text)]">{copy.title}</h3>
+        <p className="mt-1 text-sm font-medium leading-6 text-[var(--muted)]">{copy.body}</p>
+        <div className="mt-4 grid grid-cols-2 gap-2">
+          <Button type="button" variant="soft" onClick={onCancel} disabled={busy}>
+            Cancel
+          </Button>
+          <Button type="button" variant={status === "LEFT" ? "danger" : "primary"} onClick={onConfirm} loading={busy}>
+            {copy.action}
+          </Button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function GenerateChoiceModal({
+  openCourtCount,
+  availableMatchCount,
+  busy,
+  onCancel,
+  onGenerate,
+}: {
+  openCourtCount: number;
+  availableMatchCount: number;
+  busy: boolean;
+  onCancel: () => void;
+  onGenerate: (mode: "NEXT" | "OPEN") => void;
+}) {
+  const canGenerateNext = availableMatchCount >= 1 && openCourtCount >= 1;
+  const canFillOpen = availableMatchCount > 1 && openCourtCount > 1;
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-end bg-[rgba(17,24,39,0.2)] p-0 sm:items-center sm:justify-center sm:p-4" onClick={onCancel}>
+      <div
+        className="w-full border border-[var(--line)] bg-white px-4 py-4 shadow-[0_18px_44px_rgba(18,41,28,0.18)] sm:max-w-sm"
+        onClick={(event) => event.stopPropagation()}
+      >
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <h3 className="text-base font-black text-[var(--text)]">Generate</h3>
+            <p className="mt-1 text-sm font-medium text-[var(--muted)]">{openCourtCount} open, {availableMatchCount} ready</p>
+          </div>
+          <Button type="button" variant="plain" onClick={onCancel} disabled={busy}>
+            Close
+          </Button>
+        </div>
+
+        <div className="mt-4 grid grid-cols-2 gap-2">
+          <Button type="button" variant="soft" onClick={() => onGenerate("NEXT")} disabled={!canGenerateNext || busy} loading={busy}>
+            Next match only
+          </Button>
+          <Button type="button" onClick={() => onGenerate("OPEN")} disabled={!canFillOpen || busy} loading={busy}>
+            All open courts
+          </Button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function MatchResultModal({
+  match,
+  busy,
+  onCancel,
+  onFinish,
+  onVoid,
+}: {
+  match: Match;
+  busy: boolean;
+  onCancel: () => void;
+  onFinish: (matchId: string, result: "A" | "B" | "DRAW") => void;
+  onVoid: (matchId: string) => void;
+}) {
+  const teamA = match.players.filter((player) => player.team === "A").map((player) => player.player.name).join(" + ");
+  const teamB = match.players.filter((player) => player.team === "B").map((player) => player.player.name).join(" + ");
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-end bg-[rgba(17,24,39,0.2)] p-0 sm:items-center sm:justify-center sm:p-4" onClick={onCancel}>
+      <div
+        className="w-full border border-[var(--line)] bg-white px-4 py-4 shadow-[0_18px_44px_rgba(18,41,28,0.18)] sm:max-w-sm"
+        onClick={(event) => event.stopPropagation()}
+      >
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <h3 className="text-base font-black text-[var(--text)]">Court {match.courtNumber}</h3>
+            <p className="mt-1 text-sm font-medium text-[var(--muted)]">Choose result</p>
+          </div>
+          <Button type="button" variant="plain" onClick={onCancel} disabled={busy}>
+            Close
+          </Button>
+        </div>
+
+        <div className="mt-3 grid gap-2 text-sm">
+          <div className="rounded-none border border-sky-100 bg-[var(--match-a)] px-3 py-2 font-semibold text-sky-900">
+            A: {teamA}
+          </div>
+          <div className="rounded-none border border-lime-100 bg-[var(--match-b)] px-3 py-2 font-semibold text-lime-900">
+            B: {teamB}
+          </div>
+        </div>
+
+        <div className="mt-4 grid grid-cols-2 gap-2">
+          <Button type="button" onClick={() => onFinish(match.id, "A")} loading={busy}>
+            A wins
+          </Button>
+          <Button type="button" onClick={() => onFinish(match.id, "B")} loading={busy}>
+            B wins
+          </Button>
+          <Button type="button" variant="soft" onClick={() => onFinish(match.id, "DRAW")} disabled={busy}>
+            Draw
+          </Button>
+          <Button type="button" variant="danger" onClick={() => onVoid(match.id)} loading={busy}>
+            Cancel match
+          </Button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function MatchBox({
   match,
-  pendingResult,
   busy,
-  onPickResult,
-  onFinish,
-  onCancel,
+  onDecide,
   disabled = false,
 }: {
   match: Match;
-  pendingResult?: "A" | "B" | "DRAW";
   busy: boolean;
-  onPickResult: (result: "A" | "B" | "DRAW") => void;
-  onFinish: (matchId: string, result: "A" | "B" | "DRAW") => void;
-  onCancel: (matchId: string) => void;
+  onDecide: () => void;
   disabled?: boolean;
 }) {
   const teamAPlayers = match.players.filter((player) => player.team === "A").map((player) => player.player.name);
   const teamBPlayers = match.players.filter((player) => player.team === "B").map((player) => player.player.name);
 
   return (
-    <div className="pickleball-court court-shell overflow-hidden shadow-[0_16px_32px_rgba(18,41,28,0.12)]">
-      <div className="relative z-10 flex items-center justify-between gap-3 px-3.5 pb-2 pt-3">
-        <div>
-          <strong className="text-sm font-black text-white drop-shadow-sm">Court {match.courtNumber}</strong>
-          <div className="mt-0.5 text-[10px] font-black uppercase tracking-[0.14em] text-white/76">Active match</div>
+    <button
+      type="button"
+      onClick={onDecide}
+      disabled={busy || disabled}
+      className="pickleball-court court-shell block w-full overflow-hidden text-left shadow-[0_12px_24px_rgba(18,41,28,0.1)] transition hover:brightness-[1.02] focus:outline-none focus:ring-2 focus:ring-emerald-400 disabled:cursor-not-allowed disabled:opacity-70"
+    >
+      <div className="relative z-10 flex items-center justify-between gap-2 px-2.5 py-2">
+        <div className="min-w-0">
+          <div className="flex min-w-0 flex-wrap items-center gap-1.5">
+            <strong className="text-sm font-black leading-none text-white drop-shadow-sm">Court {match.courtNumber}</strong>
+            <span className="text-[10px] font-semibold text-white/78">Click court to decide winner</span>
+          </div>
+          <div className="mt-0.5 text-[9px] font-black uppercase tracking-[0.1em] text-white/76">Active</div>
         </div>
-        <div className="bg-white/18 px-2.5 py-1 text-[11px] font-black text-white ring-1 ring-white/24">Playing</div>
+        <div className="bg-white/18 px-2 py-0.5 text-[10px] font-black text-white ring-1 ring-white/24">Playing</div>
       </div>
 
-      <div className="relative z-10 px-3.5 pb-3">
+      <div className="relative z-10 px-2.5 pb-2">
         <div className="pickleball-court-surface">
           <div className="pickleball-side">
             <div className="pickleball-service">
@@ -1062,26 +1279,14 @@ function MatchBox({
 
         </div>
       </div>
-
-      <div className="relative z-10 space-y-2.5 border-t border-white/32 bg-white/88 px-3.5 pb-3.5 pt-3 backdrop-blur-[1px]">
-        <div className="grid grid-cols-2 gap-2">
-          <Button variant={pendingResult === "A" ? "primary" : "soft"} onClick={() => onPickResult("A")} disabled={busy || disabled}>A wins</Button>
-          <Button variant={pendingResult === "B" ? "primary" : "soft"} onClick={() => onPickResult("B")} disabled={busy || disabled}>B wins</Button>
-          <Button variant={pendingResult === "DRAW" ? "primary" : "soft"} onClick={() => onPickResult("DRAW")} disabled={busy || disabled}>Draw</Button>
-          <Button variant="danger" onClick={() => onCancel(match.id)} disabled={disabled} loading={busy}>Cancel</Button>
-        </div>
-        <Button className="w-full" onClick={() => pendingResult && onFinish(match.id, pendingResult)} disabled={!pendingResult || busy || disabled} loading={busy}>
-          Done
-        </Button>
-      </div>
-    </div>
+    </button>
   );
 }
 
 function CourtPlayerSlot({ name }: { name?: string }) {
   return (
-    <div className="flex min-w-0 items-center justify-center p-2">
-      <div className="w-full max-w-[150px] px-2.5 py-4 text-center text-[14px] font-black tracking-[0.02em] text-white drop-shadow-[0_2px_4px_rgba(0,0,0,0.6)]">
+    <div className="flex min-w-0 items-center justify-center p-1.5">
+      <div className="w-full max-w-[150px] px-1.5 py-2 text-center text-[11px] font-black tracking-[0.01em] text-white drop-shadow-[0_2px_4px_rgba(0,0,0,0.6)] sm:text-[13px]">
         <div className="truncate">{name || "Open"}</div>
       </div>
     </div>
@@ -1157,20 +1362,19 @@ function QueuedMatchCard({
       );
 
   return (
-    <div className={`overflow-hidden border bg-[linear-gradient(180deg,#ffffff_0%,#f7fbf6_100%)] shadow-[0_18px_34px_rgba(18,41,28,0.06)] ${priority ? "border-emerald-500 shadow-[0_18px_34px_rgba(31,157,114,0.12)]" : "border-[var(--line)]"}`}>
-      <div className="flex items-start justify-between gap-3 border-b border-[var(--line)] bg-[linear-gradient(90deg,rgba(223,242,255,0.45)_0%,rgba(238,249,208,0.4)_100%)] px-4 py-3">
-        <div>
-          <strong className="text-sm font-black text-[var(--text)]">Next Match {order}</strong>
-          <div className="mt-1 text-xs font-medium text-[var(--muted)]">{priority ? "First in line for the next open court" : "Follows after the earlier queued matches"}</div>
+    <div className={`overflow-hidden border bg-[linear-gradient(180deg,#ffffff_0%,#f7fbf6_100%)] shadow-[0_12px_24px_rgba(18,41,28,0.05)] ${priority ? "border-emerald-500 shadow-[0_12px_24px_rgba(31,157,114,0.1)]" : "border-[var(--line)]"}`}>
+      <div className="flex items-center justify-between gap-2 border-b border-[var(--line)] bg-[linear-gradient(90deg,rgba(223,242,255,0.45)_0%,rgba(238,249,208,0.4)_100%)] px-3 py-2">
+        <div className="min-w-0">
+          <strong className="block truncate text-sm font-black leading-tight text-[var(--text)]">Match {order}</strong>
+          <div className="mt-0.5 truncate text-[11px] font-medium text-[var(--muted)]">{priority ? "Next open court" : "Queued after previous"}</div>
         </div>
-        <div className="flex flex-wrap justify-end gap-1.5">
+        <div className="flex shrink-0 flex-wrap justify-end gap-1">
           {priority && <Pill tone="green">first in line</Pill>}
           <Pill tone="blue">avg {averageGames} games</Pill>
-          <Pill tone="green">{activeDraft.editing ? "editing" : "ready"}</Pill>
         </div>
       </div>
 
-      <div className="grid gap-3 p-4">
+      <div className="grid grid-cols-2 gap-2 p-2.5 sm:p-3">
         <QueueTeamBlock
           label="Team A"
           tone="blue"
@@ -1203,18 +1407,18 @@ function QueuedMatchCard({
         />
       </div>
 
-      <div className="grid grid-cols-2 gap-2 border-t border-[var(--line)] bg-white px-4 py-3">
-        <Button variant="soft" onClick={onEditToggle} disabled={disabled}>
+      <div className="grid grid-cols-2 gap-2 border-t border-[var(--line)] bg-white px-3 py-2">
+        <Button className="min-h-8 py-1.5 text-xs sm:text-sm" variant="soft" onClick={onEditToggle} disabled={disabled}>
           {activeDraft.editing ? "Done editing" : "Edit"}
         </Button>
-        <Button onClick={onGame} disabled={busy || disabled}>
-          <Play size={15} />
+        <Button className="min-h-8 py-1.5 text-xs sm:text-sm" onClick={onGame} disabled={busy || disabled}>
+          <Play size={13} />
           Game
         </Button>
       </div>
 
       {matchup.reasons.length > 0 && (
-        <div className="border-t border-[var(--line)] bg-[var(--bg-soft)] px-4 py-3 text-xs font-medium text-[var(--muted)]">
+        <div className="border-t border-[var(--line)] bg-[var(--bg-soft)] px-3 py-2 text-[11px] font-medium text-[var(--muted)]">
           Note: {matchup.reasons[0]}
         </div>
       )}
@@ -1265,9 +1469,9 @@ function QueueTeamBlock({
   } as const;
 
   return (
-    <div className={`border px-3 py-3 ${styles[tone].wrap}`}>
-      <div className={`mb-2 text-[11px] font-black uppercase tracking-[0.12em] ${styles[tone].label}`}>{label}</div>
-      <div className="grid gap-2 sm:grid-cols-2">
+    <div className={`border px-2 py-2 ${styles[tone].wrap}`}>
+      <div className={`mb-1.5 text-[10px] font-black uppercase leading-none tracking-[0.08em] ${styles[tone].label}`}>{label}</div>
+      <div className="grid gap-1.5">
         {playerIds.map((playerId, slot) => {
           const currentPlayer = waitingPlayerMap.get(playerId);
           const options = getRankedSlotOptions({
@@ -1284,16 +1488,16 @@ function QueueTeamBlock({
           });
 
           return editing ? (
-            <Select key={`${team}-${slot}`} value={playerId} onChange={(event) => onChangePlayer(team, slot, event.target.value)} className={`px-3 py-3 font-bold ${styles[tone].text}`}>
+            <Select key={`${team}-${slot}`} value={playerId} onChange={(event) => onChangePlayer(team, slot, event.target.value)} className={`px-2 py-2 text-xs font-bold sm:text-sm ${styles[tone].text}`}>
               {options.map((option) => (
                 <option key={option.id} value={option.id}>
-                  {option.name} ({option.gamesPlayed} games played)
+                  {option.name} ({option.gamesPlayed}g)
                 </option>
               ))}
             </Select>
           ) : (
-            <div key={`${team}-${slot}`} className={`border border-white/70 bg-white/72 px-3 py-3 text-sm font-black shadow-[inset_0_1px_0_rgba(255,255,255,0.75)] ${styles[tone].text}`}>
-              {currentPlayer ? `${currentPlayer.name} (${currentPlayer.gamesPlayed} games played)` : "Open"}
+            <div key={`${team}-${slot}`} className={`min-h-8 border border-white/70 bg-white/72 px-2 py-1.5 text-xs font-black leading-5 shadow-[inset_0_1px_0_rgba(255,255,255,0.75)] sm:text-sm ${styles[tone].text}`}>
+              <span className="block truncate">{currentPlayer ? `${currentPlayer.name} (${currentPlayer.gamesPlayed}g)` : "Open"}</span>
             </div>
           );
         })}

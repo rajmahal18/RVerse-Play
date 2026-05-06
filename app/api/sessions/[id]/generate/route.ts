@@ -5,6 +5,12 @@ import { generateMatchQueue } from "@/lib/matchmaking";
 import { ensureSessionIsActive, requireSessionEditor } from "@/lib/sessions";
 
 type Params = { params: Promise<{ id: string }> };
+type Generated = {
+  teamA: Player[];
+  teamB: Player[];
+  score: number;
+  reasons: string[];
+};
 
 export async function POST(_: Request, { params }: Params) {
   const { id } = await params;
@@ -22,18 +28,11 @@ export async function POST(_: Request, { params }: Params) {
   const body = await _.json().catch(() => null);
   const waitingPlayers: Player[] = await prisma.player.findMany({ where: { sessionId: id, status: "WAITING" } });
   const waitingMap = new Map(waitingPlayers.map((player) => [player.id, player]));
-
-  let generated:
-    | {
-        teamA: Player[];
-        teamB: Player[];
-        score: number;
-        reasons: string[];
-      }
-    | undefined;
+  const openCourts = session.courtCount - activeMatches.length;
 
   const customTeamAIds = Array.isArray(body?.teamAIds) ? body.teamAIds.map(String) : null;
   const customTeamBIds = Array.isArray(body?.teamBIds) ? body.teamBIds.map(String) : null;
+  let generatedMatches: Generated[] = [];
 
   if (customTeamAIds && customTeamBIds) {
     const allIds = [...customTeamAIds, ...customTeamBIds];
@@ -46,57 +45,65 @@ export async function POST(_: Request, { params }: Params) {
       return NextResponse.json({ error: "All selected players must still be waiting." }, { status: 400 });
     }
 
-    generated = {
+    generatedMatches = [{
       teamA: customTeamAIds.map((playerId: string) => waitingMap.get(playerId) as Player),
       teamB: customTeamBIds.map((playerId: string) => waitingMap.get(playerId) as Player),
       score: 0,
       reasons: [],
-    };
+    }];
   } else {
     const relationships = await prisma.playerRelationship.findMany({ where: { sessionId: id } });
-    generated = generateMatchQueue({
+    const requestedMatches = body?.mode === "OPEN" ? openCourts : Math.max(1, Math.min(openCourts, Number(body?.count || 1)));
+    generatedMatches = generateMatchQueue({
       session,
       waitingPlayers,
       relationships,
-      maxMatches: 1,
+      maxMatches: Math.max(1, Math.min(openCourts, requestedMatches)),
       now: new Date(),
-    })[0] as typeof generated;
+    }) as Generated[];
   }
 
-  if (!generated) return NextResponse.json({ error: "Need at least 4 waiting players." }, { status: 400 });
+  if (!generatedMatches.length) return NextResponse.json({ error: "Need at least 4 waiting players." }, { status: 400 });
 
   const usedCourts = new Set<number>(activeMatches.map((match: Match) => match.courtNumber));
-  let courtNumber = 1;
-  while (usedCourts.has(courtNumber)) courtNumber++;
+  const courtNumbers: number[] = [];
+  for (let courtNumber = 1; courtNumber <= session.courtCount && courtNumbers.length < generatedMatches.length; courtNumber++) {
+    if (!usedCourts.has(courtNumber)) courtNumbers.push(courtNumber);
+  }
 
-  const allPlayers = [...generated.teamA, ...generated.teamB];
-  const match = await prisma.$transaction(async (tx) => {
-    const created = await tx.match.create({
-      data: {
-        sessionId: id,
-        courtNumber,
-        players: {
-          create: [
-            ...generated.teamA.map((p) => ({ playerId: p.id, team: "A" as const })),
-            ...generated.teamB.map((p) => ({ playerId: p.id, team: "B" as const })),
-          ],
+  const matches = await prisma.$transaction(async (tx) => {
+    const createdMatches = [];
+    for (const [index, generated] of generatedMatches.entries()) {
+      const courtNumber = courtNumbers[index];
+      const allPlayers = [...generated.teamA, ...generated.teamB];
+      const created = await tx.match.create({
+        data: {
+          sessionId: id,
+          courtNumber,
+          players: {
+            create: [
+              ...generated.teamA.map((p) => ({ playerId: p.id, team: "A" as const })),
+              ...generated.teamB.map((p) => ({ playerId: p.id, team: "B" as const })),
+            ],
+          },
         },
-      },
-      include: { players: { include: { player: true } } },
-    });
-    await tx.player.updateMany({ where: { id: { in: allPlayers.map((p) => p.id) } }, data: { status: "PLAYING" } });
-    await tx.playerLog.createMany({
-      data: allPlayers.map((player) => ({
-        sessionId: id,
-        playerId: player.id,
-        matchId: created.id,
-        type: "MATCH_STARTED",
-        message: `Started match on Court ${courtNumber}.`,
-        createdAt: created.startedAt,
-      })),
-    });
-    return created;
+        include: { players: { include: { player: true } } },
+      });
+      await tx.player.updateMany({ where: { id: { in: allPlayers.map((p) => p.id) } }, data: { status: "PLAYING" } });
+      await tx.playerLog.createMany({
+        data: allPlayers.map((player) => ({
+          sessionId: id,
+          playerId: player.id,
+          matchId: created.id,
+          type: "MATCH_STARTED",
+          message: `Started match on Court ${courtNumber}.`,
+          createdAt: created.startedAt,
+        })),
+      });
+      createdMatches.push(created);
+    }
+    return createdMatches;
   });
 
-  return NextResponse.json({ match, generated });
+  return NextResponse.json({ match: matches[0], matches, generated: generatedMatches[0], generatedMatches });
 }

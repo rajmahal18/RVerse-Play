@@ -96,13 +96,21 @@ a { color: inherit; text-decoration: none; }
   position: relative;
   display: grid;
   grid-template-columns: minmax(0, 1fr) 10px minmax(0, 1fr);
-  min-height: 222px;
+  aspect-ratio: 1.7 / 1;
+  min-height: 148px;
+  max-height: 222px;
   overflow: hidden;
   border: 2px solid rgba(255, 255, 255, 0.92);
   background: #0f5f87;
   box-shadow:
     inset 0 0 0 1px rgba(255, 255, 255, 0.22),
     0 14px 30px rgba(8, 45, 55, 0.18);
+}
+
+@media (min-width: 640px) {
+  .pickleball-court-surface {
+    min-height: 190px;
+  }
 }
 
 .pickleball-court-surface::before,

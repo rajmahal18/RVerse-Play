@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="RVerse Play">
+  <rect width="512" height="512" fill="#1f9d72"/>
+  <rect x="92" y="92" width="328" height="328" fill="#f6f7f1" opacity="0.98"/>
+  <rect x="124" y="124" width="264" height="264" fill="#1f9d72"/>
+  <path d="M124 256h264M256 124v264" stroke="#f6f7f1" stroke-width="16"/>
+  <path d="M124 178h264M124 334h264" stroke="#dff5a8" stroke-width="9"/>
+  <circle cx="188" cy="214" r="26" fill="#dff5a8"/>
+  <path d="M150 305h42c24 0 38-12 38-34 0-20-14-32-38-32h-42zm0 30v-126h48c40 0 66 23 66 61 0 23-11 41-30 52l36 13v30h-35l-42-30z" fill="#f6f7f1"/>
+  <path d="M316 198h50v36h-27v82h-23z" fill="#f6f7f1"/>
+</svg>

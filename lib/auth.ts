@@ -5,6 +5,7 @@ import { canCreateSession } from "@/lib/billing";
 import { hashPassword, verifyPassword } from "@/lib/password";
 
 export const AUTH_COOKIE = "courtflow_user_id";
+export const AUTH_COOKIE_MAX_AGE_SECONDS = 60 * 60 * 24 * 7;
 const ADMIN_EMAIL = process.env.ADMIN_EMAIL || "admin@courtflow.test";
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || (process.env.NODE_ENV === "production" ? "" : "admin12345");
 

@@ -46,5 +46,5 @@ export function Pill({ children, tone = "slate" }: { children: React.ReactNode; 
 }
 
 export function Section({ title, action, children }: { title: string; action?: React.ReactNode; children: React.ReactNode }) {
-  return <section className="court-shell overflow-hidden rounded-none border border-[var(--line)] bg-[var(--surface)] shadow-[0_18px_40px_rgba(18,41,28,0.07)] backdrop-blur-sm"><div className="flex items-center justify-between gap-3 border-b border-[var(--line)]/80 bg-[linear-gradient(180deg,rgba(255,255,255,0.82)_0%,rgba(245,249,242,0.9)_100%)] px-4 py-3"><h2 className="text-sm font-bold tracking-[0.01em] text-[var(--text)]">{title}</h2>{action}</div><div className="p-4">{children}</div></section>;
+  return <section className="court-shell overflow-hidden rounded-none border border-[var(--line)] bg-[var(--surface)] shadow-[0_14px_30px_rgba(18,41,28,0.06)] backdrop-blur-sm"><div className="flex items-center justify-between gap-2 border-b border-[var(--line)]/80 bg-[linear-gradient(180deg,rgba(255,255,255,0.82)_0%,rgba(245,249,242,0.9)_100%)] px-3 py-2"><h2 className="text-sm font-bold tracking-[0.01em] text-[var(--text)]">{title}</h2>{action}</div><div className="p-3">{children}</div></section>;
 }
