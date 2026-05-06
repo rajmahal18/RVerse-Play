@@ -1,5 +1,4 @@
 import { NextResponse } from "next/server";
-import { PaymentType } from "@prisma/client";
 import { getCurrentUser } from "@/lib/auth";
 import { DEFAULT_TOP_UP_CREDITS, getCreditTopUpAmount, isAdmin } from "@/lib/billing";
 import { createPaymongoCheckoutSession } from "@/lib/paymongo";
@@ -22,7 +21,7 @@ export async function POST(req: Request) {
   const payment = await prisma.payment.create({
     data: {
       userId: user.id,
-      type: PaymentType.CREDIT_TOP_UP,
+      type: "CREDIT_TOP_UP",
       amount,
       currency: "PHP",
       status: "PENDING",
