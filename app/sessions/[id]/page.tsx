@@ -6,6 +6,7 @@ import {
   ArrowLeft,
   ChevronDown,
   ChevronUp,
+  Clock3,
   Coffee,
   Equal,
   History,
@@ -17,6 +18,7 @@ import {
   Shuffle,
   TimerReset,
   Users,
+  UserPlus,
   XCircle,
   Zap,
 } from "lucide-react";
@@ -31,10 +33,20 @@ type Player = {
   gamesPlayed: number;
   waitStartedAt: string;
   createdAt: string;
+  leftAt?: string | null;
 };
 type MatchPlayer = { id: string; team: "A" | "B"; result: string; player: Player };
 type Match = { id: string; courtNumber: number; status: "ACTIVE" | "FINISHED"; startedAt: string; endedAt?: string | null; winningTeam?: "A" | "B" | null; players: MatchPlayer[] };
-type Relationship = { id: string; playerAId: string; playerBId: string; partnerCount: number; opponentCount: number; lastPartnerAt?: string | null };
+type Relationship = { id: string; playerAId: string; playerBId: string; partnerCount: number; opponentCount: number; lockedPair?: boolean; lastPartnerAt?: string | null };
+type PlayerLog = {
+  id: string;
+  sessionId: string;
+  playerId: string;
+  matchId?: string | null;
+  type: "ARRIVED" | "RESTED" | "MATCH_STARTED" | "MATCH_WON" | "MATCH_LOST" | "MATCH_DRAW" | "MATCH_CANCELED" | "LEFT" | "RETURNED";
+  message?: string | null;
+  createdAt: string;
+};
 type Session = {
   id: string;
   name: string;
@@ -49,15 +61,52 @@ type Session = {
   players: Player[];
   matches: Match[];
   relationships: Relationship[];
+  playerLogs: PlayerLog[];
 };
 type PreviewPlayer = Pick<Player, "id" | "name" | "skillLevel" | "gamesPlayed">;
 type QueuedMatchup = { teamA: PreviewPlayer[]; teamB: PreviewPlayer[]; score: number; reasons: string[] };
 type QueueDraft = { teamAIds: string[]; teamBIds: string[]; editing: boolean };
-type Tab = "queue" | "courts" | "summary" | "players" | "history" | "settings";
+type PairDraft = { playerAId: string; playerBId: string; suggested?: boolean };
+type Tab = "queue" | "courts" | "summary" | "players" | "pairing" | "history" | "settings";
 type SummarySortKey = "games" | "wins" | "losses";
+type PlayerDetailsTab = "matchups" | "results" | "logs";
 
 const statusTone = { WAITING: "amber", PLAYING: "blue", RESTING: "slate", LEFT: "red" } as const;
 const skillLabel = { BEGINNER: "Beginner", INTERMEDIATE: "Intermediate", ADVANCED: "Advanced" };
+
+function formatClockTime(value?: string | null) {
+  if (!value) return "";
+  return new Date(value).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+}
+
+function getPlayerStatusTimeLabel(player: Player) {
+  if (player.status === "WAITING") return `Waiting since ${formatClockTime(player.waitStartedAt)}`;
+  if (player.status === "PLAYING") return "Now playing";
+  if (player.status === "RESTING") return "Resting";
+  if (player.status === "LEFT") return player.leftAt ? `Left ${formatClockTime(player.leftAt)}` : "Left";
+  return "";
+}
+
+function sortPairingPlayers(players: Player[]) {
+  return [...players].sort(
+    (a, b) =>
+      new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime() ||
+      new Date(a.waitStartedAt).getTime() - new Date(b.waitStartedAt).getTime() ||
+      a.name.localeCompare(b.name),
+  );
+}
+
+function buildPairDrafts(players: Player[], configuredPairs: Relationship[]) {
+  const drafts = configuredPairs.map((pair) => ({ playerAId: pair.playerAId, playerBId: pair.playerBId, suggested: false }));
+  const pairedIds = new Set(drafts.flatMap((pair) => [pair.playerAId, pair.playerBId]));
+  const unpairedPlayers = sortPairingPlayers(players.filter((player) => player.status !== "LEFT" && !pairedIds.has(player.id)));
+
+  for (let index = 0; index + 1 < unpairedPlayers.length; index += 2) {
+    drafts.push({ playerAId: unpairedPlayers[index].id, playerBId: unpairedPlayers[index + 1].id, suggested: true });
+  }
+
+  return drafts;
+}
 
 function toQueueDrafts(matchups: QueuedMatchup[]) {
   return matchups.map((matchup) => ({
@@ -94,6 +143,9 @@ export default function SessionPage({ params }: { params: Promise<{ id: string }
   const [endingSession, setEndingSession] = useState(false);
   const [copiedCode, setCopiedCode] = useState(false);
   const [queuedStartingIndex, setQueuedStartingIndex] = useState<number | null>(null);
+  const [savingPairs, setSavingPairs] = useState(false);
+  const [pairDrafts, setPairDrafts] = useState<PairDraft[]>([]);
+  const [pairDraftsDirty, setPairDraftsDirty] = useState(false);
   const [summarySort, setSummarySort] = useState<{ key: SummarySortKey; direction: "asc" | "desc" }>({
     key: "wins",
     direction: "desc",
@@ -141,6 +193,19 @@ export default function SessionPage({ params }: { params: Promise<{ id: string }
   const playingCount = session?.players.filter((player) => player.status === "PLAYING").length ?? 0;
   const restingCount = session?.players.filter((player) => player.status === "RESTING").length ?? 0;
   const selectedPlayer = session?.players.find((player) => player.id === selectedPlayerId) ?? null;
+  const activePlayers = useMemo(() => session?.players.filter((player) => player.status !== "LEFT") ?? [], [session]);
+  const configuredPairs = useMemo(
+    () => session?.relationships.filter((relationship) => relationship.lockedPair) ?? [],
+    [session],
+  );
+  const savedPairedPlayerIds = useMemo(() => new Set(configuredPairs.flatMap((pair) => [pair.playerAId, pair.playerBId])), [configuredPairs]);
+  const waitingUnpairedCount = useMemo(() => waiting.filter((player) => !savedPairedPlayerIds.has(player.id)).length, [savedPairedPlayerIds, waiting]);
+
+  useEffect(() => {
+    if (!session) return;
+    if (pairDraftsDirty) return;
+    setPairDrafts(buildPairDrafts(activePlayers, configuredPairs));
+  }, [activePlayers, configuredPairs, pairDraftsDirty, session]);
   const summaryRows = useMemo(() => {
     if (!session) return [];
 
@@ -372,6 +437,40 @@ export default function SessionPage({ params }: { params: Promise<{ id: string }
     setQueueDrafts((current) => current.map((draft, draftIndex) => (draftIndex === index ? { ...draft, editing: !draft.editing } : draft)));
   }
 
+  function addPairDraft() {
+    const used = new Set(pairDrafts.flatMap((pair) => [pair.playerAId, pair.playerBId]).filter(Boolean));
+    const available = sortPairingPlayers(activePlayers.filter((player) => !used.has(player.id)));
+    setPairDraftsDirty(true);
+    setPairDrafts((current) => [...current, { playerAId: available[0]?.id || "", playerBId: available[1]?.id || "", suggested: true }]);
+  }
+
+  function updatePairDraft(index: number, field: "playerAId" | "playerBId", playerId: string) {
+    setPairDraftsDirty(true);
+    setPairDrafts((current) => current.map((pair, pairIndex) => (pairIndex === index ? { ...pair, [field]: playerId, suggested: false } : pair)));
+  }
+
+  function removePairDraft(index: number) {
+    setPairDraftsDirty(true);
+    setPairDrafts((current) => current.filter((_, pairIndex) => pairIndex !== index));
+  }
+
+  async function savePairs() {
+    if (!session?.viewerCanManage) return;
+    setSavingPairs(true);
+    setError("");
+    const pairs = pairDrafts.filter((pair) => pair.playerAId && pair.playerBId && pair.playerAId !== pair.playerBId);
+    const res = await fetch(`/api/sessions/${sessionId}/pairs`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ pairs }),
+    });
+    const data = await readJsonSafe(res);
+    if (!res.ok) setError(data?.error || "Could not save locked pairs.");
+    else setPairDraftsDirty(false);
+    setSavingPairs(false);
+    void load();
+  }
+
   async function finish(matchId: string, result: "A" | "B" | "DRAW") {
     if (!session?.viewerCanManage) return;
     setPendingMatchId(matchId);
@@ -458,6 +557,7 @@ export default function SessionPage({ params }: { params: Promise<{ id: string }
     { id: "queue", label: "Queue", icon: <ListOrdered size={15} /> },
     { id: "courts", label: "Courts", icon: <Play size={15} /> },
     { id: "players", label: "Players", icon: <Users size={15} /> },
+    ...(canManage ? [{ id: "pairing" as const, label: "Pairing", icon: <UserPlus size={15} /> }] : []),
     { id: "history", label: "History", icon: <History size={15} /> },
     { id: "summary", label: "Summary", icon: <Equal size={15} /> },
     ...(canManage ? [{ id: "settings" as const, label: "Settings", icon: <Settings size={15} /> }] : []),
@@ -540,6 +640,11 @@ export default function SessionPage({ params }: { params: Promise<{ id: string }
         {tab === "queue" && (
           <Section title="Next Matchups" action={<Pill tone="green">{queuedMatchups.length ? `${queuedMatchups.length} queued` : "waiting pool"}</Pill>}>
             <div className="space-y-4">
+              {session.rotationMode === "LOCKED_PAIRS" && waitingUnpairedCount > 0 && (
+                <div className="border border-amber-100 bg-amber-50 px-3 py-2 text-sm font-semibold text-amber-800">
+                  {waitingUnpairedCount} waiting player{waitingUnpairedCount === 1 ? "" : "s"} need saved pairs before they can be queued.
+                </div>
+              )}
               {queuedMatchups.length ? (
                 <div className="space-y-3">
                   {queuedMatchups.map((matchup, index) => (
@@ -694,6 +799,18 @@ export default function SessionPage({ params }: { params: Promise<{ id: string }
           </div>
         )}
 
+        {canManage && tab === "pairing" && (
+          <PairingPanel
+            players={activePlayers}
+            pairDrafts={pairDrafts}
+            saving={savingPairs}
+            onAddPair={addPairDraft}
+            onUpdatePair={updatePairDraft}
+            onRemovePair={removePairDraft}
+            onSave={savePairs}
+          />
+        )}
+
         {tab === "history" && (
           <Section title="Match History" action={<Pill tone="purple">{session.matches.filter((match) => match.status === "FINISHED").length} done</Pill>}>
             <div className="space-y-3">
@@ -747,6 +864,7 @@ export default function SessionPage({ params }: { params: Promise<{ id: string }
         <PlayerDetailsSheet
           player={selectedPlayer}
           matches={session.matches}
+          logs={session.playerLogs ?? []}
           onClose={() => setSelectedPlayerId(null)}
         />
       )}
@@ -875,9 +993,13 @@ function PlayerTable({
                 <Pill tone={statusTone[player.status]}>{player.status.toLowerCase()}</Pill>
                 <Pill>{skillLabel[player.skillLevel]}</Pill>
               </div>
-              <div className="mt-1 flex flex-wrap gap-3 text-xs font-medium text-[var(--muted)]">
+              <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs font-medium text-[var(--muted)]">
                 <span>{player.gamesPlayed} games played</span>
-                <span>Waiting since {new Date(player.waitStartedAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}</span>
+                <span className="inline-flex min-w-0 items-center gap-1.5">
+                  <Clock3 size={13} className="shrink-0 text-emerald-700" />
+                  <span>Arrived {formatClockTime(player.createdAt)}</span>
+                </span>
+                <span>{getPlayerStatusTimeLabel(player)}</span>
               </div>
             </div>
             <div className="flex flex-wrap gap-2" onClick={(event) => event.stopPropagation()}>{actions(player)}</div>
@@ -1229,6 +1351,145 @@ function getRankedSlotOptions(params: {
   return [...currentOption, ...ranked];
 }
 
+function PairingPanel({
+  players,
+  pairDrafts,
+  saving,
+  onAddPair,
+  onUpdatePair,
+  onRemovePair,
+  onSave,
+}: {
+  players: Player[];
+  pairDrafts: PairDraft[];
+  saving: boolean;
+  onAddPair: () => void;
+  onUpdatePair: (index: number, field: "playerAId" | "playerBId", playerId: string) => void;
+  onRemovePair: (index: number) => void;
+  onSave: () => void;
+}) {
+  const usedPlayerIds = pairDrafts.flatMap((pair) => [pair.playerAId, pair.playerBId]).filter(Boolean);
+  const usedIds = new Set(usedPlayerIds);
+  const duplicateIds = new Set<string>();
+  const seen = new Set<string>();
+  for (const id of usedPlayerIds) {
+    if (seen.has(id)) duplicateIds.add(id);
+    seen.add(id);
+  }
+  const incompletePairs = pairDrafts.filter((pair) => !pair.playerAId || !pair.playerBId || pair.playerAId === pair.playerBId).length;
+  const canAddPair = players.filter((player) => !usedIds.has(player.id)).length >= 2;
+
+  return (
+    <Section
+      title="Pairing"
+      action={
+        <div className="flex flex-wrap gap-2">
+          <Pill tone="purple">{pairDrafts.length} pairs</Pill>
+          <Pill tone="slate">{Math.max(0, players.length - usedIds.size)} unpaired</Pill>
+        </div>
+      }
+    >
+      <div className="space-y-4">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="text-sm font-semibold leading-6 text-[var(--muted)]">
+            Locked-pairs mode only uses saved pairs. New unpaired players are suggested here by arrival order and must be saved before they can play.
+          </div>
+          <Button type="button" variant="soft" onClick={onAddPair} disabled={!canAddPair}>
+            <Plus size={15} />
+            Add pair
+          </Button>
+        </div>
+
+        {pairDrafts.length ? (
+          <div className="divide-y divide-[var(--line)] border border-[var(--line)] bg-white/82">
+            {pairDrafts.map((pair, index) => (
+              <div key={index} className="grid gap-2 px-3 py-3 sm:grid-cols-[1fr_1fr_auto] sm:items-center">
+                <div className="grid gap-1">
+                  {pair.suggested && <span className="text-[10px] font-black uppercase tracking-[0.08em] text-amber-700">Suggested</span>}
+                  <PairSelect
+                    value={pair.playerAId}
+                    players={players}
+                    usedIds={usedIds}
+                    currentPair={pair}
+                    placeholder="Player 1"
+                    onChange={(playerId) => onUpdatePair(index, "playerAId", playerId)}
+                  />
+                </div>
+                <div className="grid gap-1">
+                  {pair.suggested && <span className="text-[10px] font-black uppercase tracking-[0.08em] text-amber-700">Save to lock</span>}
+                  <PairSelect
+                    value={pair.playerBId}
+                    players={players}
+                    usedIds={usedIds}
+                    currentPair={pair}
+                    placeholder="Player 2"
+                    onChange={(playerId) => onUpdatePair(index, "playerBId", playerId)}
+                  />
+                </div>
+                <Button type="button" variant="plain" onClick={() => onRemovePair(index)}>
+                  <XCircle size={15} />
+                  Remove
+                </Button>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <Empty text="No locked pairs configured yet." />
+        )}
+
+        {(duplicateIds.size > 0 || incompletePairs > 0) && (
+          <div className="border border-red-100 bg-red-50 px-3 py-2 text-sm font-semibold text-red-700">
+            Fix duplicate or incomplete pairs before saving.
+          </div>
+        )}
+
+        <div className="flex flex-wrap justify-end gap-2">
+          <Button type="button" onClick={onSave} loading={saving} disabled={duplicateIds.size > 0 || incompletePairs > 0}>
+            Save pairs
+          </Button>
+        </div>
+      </div>
+    </Section>
+  );
+}
+
+function PairSelect({
+  value,
+  players,
+  usedIds,
+  currentPair,
+  placeholder,
+  onChange,
+}: {
+  value: string;
+  players: Player[];
+  usedIds: Set<string>;
+  currentPair: PairDraft;
+  placeholder: string;
+  onChange: (playerId: string) => void;
+}) {
+  const hasValue = Boolean(value);
+  return (
+    <Select
+      value={value}
+      onChange={(event) => onChange(event.target.value)}
+      className={hasValue ? "border-emerald-200 bg-emerald-50/60 font-semibold" : ""}
+    >
+      <option value="">{placeholder}</option>
+      {players.map((player) => {
+        const selectedInThisPair = player.id === currentPair.playerAId || player.id === currentPair.playerBId;
+        const disabled = usedIds.has(player.id) && !selectedInThisPair;
+        const indicator = disabled ? "paired" : selectedInThisPair ? "selected here" : "available";
+        return (
+          <option key={player.id} value={player.id} disabled={disabled}>
+            {player.name} ({player.gamesPlayed} games) - {indicator}
+          </option>
+        );
+      })}
+    </Select>
+  );
+}
+
 function Empty({ text }: { text: string }) {
   return (
     <div className="rounded-none border border-dashed border-[var(--line-strong)] bg-[var(--bg-soft)] px-4 py-10 text-center text-sm font-medium text-[var(--muted)]">
@@ -1237,7 +1498,7 @@ function Empty({ text }: { text: string }) {
   );
 }
 
-function PlayerDetailsSheet({
+function LegacyPlayerDetailsSheet({
   player,
   matches,
   onClose,
@@ -1384,4 +1645,289 @@ function PlayerDetailsSheet({
       </div>
     </div>
   );
+}
+
+function PlayerDetailsSheet({
+  player,
+  matches,
+  logs,
+  onClose,
+}: {
+  player: Player;
+  matches: Match[];
+  logs: PlayerLog[];
+  onClose: () => void;
+}) {
+  const [activeTab, setActiveTab] = useState<PlayerDetailsTab>("matchups");
+  const playerMatches = matches
+    .filter((match) => match.players.some((entry) => entry.player.id === player.id))
+    .sort((a, b) => new Date(b.startedAt).getTime() - new Date(a.startedAt).getTime());
+  const teammateCounts = new Map<string, number>();
+  const opponentCounts = new Map<string, number>();
+  let wins = 0;
+  let losses = 0;
+  let draws = 0;
+  let live = 0;
+
+  for (const match of playerMatches) {
+    const current = match.players.find((entry) => entry.player.id === player.id);
+    if (!current) continue;
+    const teammates = match.players.filter((entry) => entry.team === current.team && entry.player.id !== player.id).map((entry) => entry.player.name);
+    const opponents = match.players.filter((entry) => entry.team !== current.team).map((entry) => entry.player.name);
+    if (match.status === "ACTIVE") live++;
+    else if (current.result === "WIN") wins++;
+    else if (current.result === "LOSS") losses++;
+    else draws++;
+    for (const teammate of teammates) teammateCounts.set(teammate, (teammateCounts.get(teammate) ?? 0) + 1);
+    for (const opponent of opponents) opponentCounts.set(opponent, (opponentCounts.get(opponent) ?? 0) + 1);
+  }
+
+  const allPartners = [...teammateCounts.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+  const allOpponents = [...opponentCounts.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+  const playerLogs = buildPlayerLogs({ player, matches: playerMatches, logs });
+  const recordLine = `${wins}W - ${losses}L - ${draws}D${live ? ` - ${live} live` : ""}`;
+  const tabs: { id: PlayerDetailsTab; label: string; count: number }[] = [
+    { id: "matchups", label: "Matchups", count: allPartners.length + allOpponents.length },
+    { id: "results", label: "Results", count: playerMatches.length },
+    { id: "logs", label: "Logs", count: playerLogs.length },
+  ];
+
+  return (
+    <div className="fixed inset-0 z-40 flex items-end bg-[rgba(17,24,39,0.18)] p-0 sm:items-center sm:justify-center sm:p-6" onClick={onClose}>
+      <div
+        className="max-h-[88vh] w-full overflow-hidden rounded-none border border-[var(--line)] bg-[linear-gradient(180deg,rgba(255,255,255,0.98)_0%,rgba(244,248,241,0.96)_100%)] shadow-[0_24px_60px_rgba(18,41,28,0.18)] sm:max-w-2xl"
+        onClick={(event) => event.stopPropagation()}
+      >
+        <div className="flex items-start justify-between gap-3 border-b border-[var(--line)] px-4 py-4 sm:px-5">
+          <div className="min-w-0">
+            <div className="flex flex-wrap items-center gap-2">
+              <h3 className="truncate text-base font-black text-[var(--text)]">{player.name}</h3>
+              <Pill tone={statusTone[player.status]}>{player.status.toLowerCase()}</Pill>
+              <Pill>{skillLabel[player.skillLevel]}</Pill>
+            </div>
+            <div className="mt-2 flex flex-wrap gap-1.5">
+              <Pill tone="blue">{player.gamesPlayed} games</Pill>
+              <Pill tone="green">{playerLogs.length} logs</Pill>
+            </div>
+          </div>
+          <Button variant="soft" onClick={onClose}>Close</Button>
+        </div>
+
+        <div className="border-b border-[var(--line)] bg-white/80 px-4 pt-3 sm:px-5">
+          <div className="grid grid-cols-3 gap-1.5">
+            {tabs.map((tab) => (
+              <button
+                key={tab.id}
+                type="button"
+                onClick={() => setActiveTab(tab.id)}
+                className={`min-h-10 border px-2 py-2 text-xs font-black transition sm:text-sm ${
+                  activeTab === tab.id
+                    ? "border-emerald-300 bg-emerald-50 text-emerald-800"
+                    : "border-[var(--line)] bg-white text-[var(--muted)] hover:bg-[var(--bg-soft)]"
+                }`}
+              >
+                <span className="block truncate">{tab.label}</span>
+                <span className="mt-0.5 block text-[10px] font-bold opacity-70">{tab.count}</span>
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div className="max-h-[calc(88vh-146px)] overflow-y-auto px-4 py-4 sm:px-5">
+          {activeTab === "matchups" && (
+            <div className="grid gap-3">
+              <div className="rounded-none border border-emerald-100 bg-emerald-50/80 px-3 py-3">
+                <div className="text-[11px] font-bold uppercase tracking-[0.08em] text-emerald-700">Record</div>
+                <div className="mt-1 text-sm font-black text-emerald-950">{recordLine}</div>
+              </div>
+              <PlayerCountList title="Partners" tone="blue" rows={allPartners} empty="No partners yet." />
+              <PlayerCountList title="Most faced" tone="lime" rows={allOpponents} empty="No opponents yet." />
+            </div>
+          )}
+          {activeTab === "results" && <PlayerResultsList player={player} matches={playerMatches} />}
+          {activeTab === "logs" && <PlayerLogsList logs={playerLogs} />}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function PlayerCountList({ title, tone, rows, empty }: { title: string; tone: "blue" | "lime"; rows: [string, number][]; empty: string }) {
+  const styles = {
+    blue: "border-sky-100 bg-sky-50/75 text-sky-950",
+    lime: "border-lime-100 bg-lime-50/75 text-lime-950",
+  } as const;
+  const labelStyles = { blue: "text-sky-700", lime: "text-lime-700" } as const;
+
+  return (
+    <div className={`rounded-none border px-3 py-3 ${styles[tone]}`}>
+      <div className={`text-[11px] font-bold uppercase tracking-[0.08em] ${labelStyles[tone]}`}>{title}</div>
+      {rows.length ? (
+        <div className="mt-2 flex flex-wrap gap-1.5">
+          {rows.map(([name, count]) => (
+            <span key={name} className="rounded-none bg-white/80 px-2.5 py-1.5 text-xs font-bold ring-1 ring-white/70">
+              {name} ({count}x)
+            </span>
+          ))}
+        </div>
+      ) : (
+        <div className="mt-2 text-sm font-semibold">{empty}</div>
+      )}
+    </div>
+  );
+}
+
+function PlayerResultsList({ player, matches }: { player: Player; matches: Match[] }) {
+  if (!matches.length) return <Empty text="No games yet." />;
+
+  return (
+    <div className="space-y-3">
+      {matches.map((match) => {
+        const current = match.players.find((entry) => entry.player.id === player.id)!;
+        const teammates = match.players.filter((entry) => entry.team === current.team).map((entry) => entry.player.name).join(" + ");
+        const opponents = match.players.filter((entry) => entry.team !== current.team).map((entry) => entry.player.name).join(" + ");
+        const resultLabel = match.status === "ACTIVE" ? "Live" : current.result === "WIN" ? "Win" : current.result === "LOSS" ? "Loss" : "Draw";
+        const resultTone =
+          resultLabel === "Win"
+            ? "border-emerald-200 bg-emerald-50/60"
+            : resultLabel === "Loss"
+              ? "border-red-200 bg-red-50/60"
+              : resultLabel === "Live"
+                ? "border-sky-200 bg-sky-50/60"
+                : "border-slate-200 bg-slate-50/70";
+        const ResultIcon = resultLabel === "Win" ? CheckCircle2 : resultLabel === "Loss" ? XCircle : resultLabel === "Draw" ? Equal : Zap;
+        const resultTextTone = resultLabel === "Win" ? "text-emerald-700" : resultLabel === "Loss" ? "text-red-700" : resultLabel === "Live" ? "text-sky-700" : "text-slate-700";
+
+        return (
+          <div key={match.id} className={`rounded-none border px-3.5 py-3 ${resultTone}`}>
+            <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <strong className="text-sm font-black text-[var(--text)]">Court {match.courtNumber}</strong>
+                <div className="mt-0.5 text-xs font-semibold text-[var(--muted)]">{formatLogTime(match.startedAt)}</div>
+              </div>
+              <div className={`inline-flex items-center gap-1.5 rounded-none bg-white/90 px-2.5 py-1 text-xs font-bold ${resultTextTone}`}>
+                <ResultIcon size={14} />
+                {resultLabel}
+              </div>
+            </div>
+            <div className="space-y-2 text-sm">
+              <div className="rounded-none border border-sky-100 bg-[var(--match-a)] px-3 py-2 font-semibold text-sky-900">
+                Team {current.team}: {teammates}
+              </div>
+              <div className="rounded-none border border-lime-100 bg-[var(--match-b)] px-3 py-2 font-semibold text-lime-900">
+                Opponents: {opponents}
+              </div>
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+type DisplayPlayerLog = {
+  id: string;
+  type: PlayerLog["type"];
+  title: string;
+  detail: string;
+  createdAt: string;
+};
+
+function buildPlayerLogs({ player, matches, logs }: { player: Player; matches: Match[]; logs: PlayerLog[] }) {
+  const existingLogs = logs.filter((log) => log.playerId === player.id);
+  const events: DisplayPlayerLog[] = existingLogs.map((log) => ({
+    id: log.id,
+    type: log.type,
+    title: getLogTitle(log.type),
+    detail: log.message || getLogTitle(log.type),
+    createdAt: log.createdAt,
+  }));
+
+  if (!existingLogs.some((log) => log.type === "ARRIVED")) {
+    events.push({ id: `${player.id}-arrived`, type: "ARRIVED", title: "Arrived", detail: "Joined the player list.", createdAt: player.createdAt });
+  }
+
+  const eventKeys = new Set(existingLogs.map((log) => `${log.matchId || "none"}:${log.type}`));
+  for (const match of matches) {
+    const current = match.players.find((entry) => entry.player.id === player.id);
+    if (!current) continue;
+    if (!eventKeys.has(`${match.id}:MATCH_STARTED`)) {
+      events.push({ id: `${match.id}-started`, type: "MATCH_STARTED", title: "Started match", detail: `Started on Court ${match.courtNumber}.`, createdAt: match.startedAt });
+    }
+    if (match.status === "FINISHED" && match.endedAt) {
+      const type: PlayerLog["type"] = current.result === "WIN" ? "MATCH_WON" : current.result === "LOSS" ? "MATCH_LOST" : "MATCH_DRAW";
+      if (!eventKeys.has(`${match.id}:${type}`)) {
+        events.push({ id: `${match.id}-${type}`, type, title: getLogTitle(type), detail: `Finished on Court ${match.courtNumber}.`, createdAt: match.endedAt });
+      }
+    }
+  }
+
+  if (player.leftAt && !existingLogs.some((log) => log.type === "LEFT")) {
+    events.push({ id: `${player.id}-left`, type: "LEFT", title: "Left", detail: "Left the session.", createdAt: player.leftAt });
+  }
+
+  return events.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+}
+
+function getLogTitle(type: PlayerLog["type"]) {
+  const titles = {
+    ARRIVED: "Arrived",
+    RESTED: "Rested",
+    MATCH_STARTED: "Started match",
+    MATCH_WON: "Won match",
+    MATCH_LOST: "Lost match",
+    MATCH_DRAW: "Match draw",
+    MATCH_CANCELED: "Match canceled",
+    LEFT: "Left",
+    RETURNED: "Returned",
+  } as const;
+  return titles[type];
+}
+
+function PlayerLogsList({ logs }: { logs: DisplayPlayerLog[] }) {
+  if (!logs.length) return <Empty text="No player logs yet." />;
+
+  return (
+    <div className="space-y-2.5">
+      {logs.map((log) => {
+        const Icon = getLogIcon(log.type);
+        return (
+          <div key={log.id} className="grid grid-cols-[34px_1fr] gap-3 border border-[var(--line)] bg-white/84 px-3 py-3">
+            <div className={`flex h-8 w-8 items-center justify-center rounded-none ${getLogIconTone(log.type)}`}>
+              <Icon size={15} />
+            </div>
+            <div className="min-w-0">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <strong className="text-sm font-black text-[var(--text)]">{log.title}</strong>
+                <span className="text-xs font-semibold text-[var(--muted)]">{formatLogTime(log.createdAt)}</span>
+              </div>
+              <div className="mt-0.5 text-sm font-medium leading-5 text-[var(--muted)]">{log.detail}</div>
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function getLogIcon(type: PlayerLog["type"]) {
+  if (type === "ARRIVED" || type === "RETURNED") return Clock3;
+  if (type === "RESTED") return Coffee;
+  if (type === "MATCH_STARTED") return Play;
+  if (type === "MATCH_WON") return CheckCircle2;
+  if (type === "MATCH_LOST" || type === "MATCH_CANCELED") return XCircle;
+  if (type === "LEFT") return LogOut;
+  return Equal;
+}
+
+function getLogIconTone(type: PlayerLog["type"]) {
+  if (type === "MATCH_WON") return "bg-emerald-50 text-emerald-700 ring-1 ring-emerald-100";
+  if (type === "MATCH_LOST" || type === "MATCH_CANCELED" || type === "LEFT") return "bg-red-50 text-red-700 ring-1 ring-red-100";
+  if (type === "MATCH_STARTED") return "bg-sky-50 text-sky-700 ring-1 ring-sky-100";
+  if (type === "RESTED") return "bg-slate-100 text-slate-700 ring-1 ring-slate-200";
+  return "bg-lime-50 text-lime-700 ring-1 ring-lime-100";
+}
+
+function formatLogTime(value: string) {
+  return new Date(value).toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
 }

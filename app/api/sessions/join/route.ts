@@ -97,25 +97,50 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "That player name is already in use." }, { status: 409 });
     }
     if (player.status === "LEFT" || (!player.claimedByJoin && !player.userId)) {
-      await prisma.player.update({
-        where: { id: player.id },
-        data: {
-          claimedByJoin: player.userId ? undefined : true,
-          status: player.status === "LEFT" ? "WAITING" : undefined,
-          leftAt: player.status === "LEFT" ? null : undefined,
-          waitStartedAt: player.status === "LEFT" ? new Date() : undefined,
-        },
+      const joinedAt = new Date();
+      await prisma.$transaction(async (tx) => {
+        await tx.player.update({
+          where: { id: player.id },
+          data: {
+            claimedByJoin: player.userId ? undefined : true,
+            status: player.status === "LEFT" ? "WAITING" : undefined,
+            leftAt: player.status === "LEFT" ? null : undefined,
+            waitStartedAt: player.status === "LEFT" ? joinedAt : undefined,
+          },
+        });
+        await tx.playerLog.create({
+          data: {
+            sessionId: session.id,
+            playerId: player.id,
+            type: player.status === "LEFT" ? "RETURNED" : "ARRIVED",
+            message: player.status === "LEFT" ? "Returned to the queue." : "Claimed a player slot.",
+            createdAt: joinedAt,
+          },
+        });
       });
     }
   } else {
-    const player = await prisma.player.create({
-      data: {
-        sessionId: session.id,
-        name,
-        claimedByJoin: true,
-        status: "WAITING",
-        waitStartedAt: new Date(),
-      },
+    const joinedAt = new Date();
+    const player = await prisma.$transaction(async (tx) => {
+      const created = await tx.player.create({
+        data: {
+          sessionId: session.id,
+          name,
+          claimedByJoin: true,
+          status: "WAITING",
+          waitStartedAt: joinedAt,
+        },
+      });
+      await tx.playerLog.create({
+        data: {
+          sessionId: session.id,
+          playerId: created.id,
+          type: "ARRIVED",
+          message: "Joined through the session code.",
+          createdAt: created.createdAt,
+        },
+      });
+      return created;
     });
     joinedPlayerId = player.id;
   }

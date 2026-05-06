@@ -28,6 +28,7 @@ export async function GET(_: Request, { params }: Params) {
       players: { orderBy: [{ status: "asc" }, { gamesPlayed: "asc" }, { waitStartedAt: "asc" }] },
       matches: { orderBy: { startedAt: "desc" }, include: { players: { include: { player: true } } } },
       relationships: true,
+      playerLogs: { orderBy: { createdAt: "desc" } },
     },
   });
   if (!session) return NextResponse.json({ error: "Session not found" }, { status: 404 });
@@ -47,6 +48,7 @@ export async function PATCH(req: Request, { params }: Params) {
 
   if (body.status === "ENDED" || body.action === "end") {
     const endedAt = existing.endedAt || new Date();
+    const playingPlayers = await prisma.player.findMany({ where: { sessionId: id, status: "PLAYING" }, select: { id: true } });
     const session = await prisma.session.update({
       where: { id },
       data: {
@@ -56,6 +58,17 @@ export async function PATCH(req: Request, { params }: Params) {
         players: { updateMany: { where: { status: "PLAYING" }, data: { status: "WAITING", waitStartedAt: endedAt } } },
       },
     });
+    if (playingPlayers.length) {
+      await prisma.playerLog.createMany({
+        data: playingPlayers.map((player) => ({
+          sessionId: id,
+          playerId: player.id,
+          type: "MATCH_CANCELED",
+          message: "Session ended while match was active.",
+          createdAt: endedAt,
+        })),
+      });
+    }
     return NextResponse.json(session);
   }
 

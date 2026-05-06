@@ -85,6 +85,16 @@ export async function POST(_: Request, { params }: Params) {
       include: { players: { include: { player: true } } },
     });
     await tx.player.updateMany({ where: { id: { in: allPlayers.map((p) => p.id) } }, data: { status: "PLAYING" } });
+    await tx.playerLog.createMany({
+      data: allPlayers.map((player) => ({
+        sessionId: id,
+        playerId: player.id,
+        matchId: created.id,
+        type: "MATCH_STARTED",
+        message: `Started match on Court ${courtNumber}.`,
+        createdAt: created.startedAt,
+      })),
+    });
     return created;
   });
 

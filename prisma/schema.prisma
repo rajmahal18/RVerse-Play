@@ -66,6 +66,18 @@ enum MatchResult {
   NONE
 }
 
+enum PlayerLogType {
+  ARRIVED
+  RESTED
+  MATCH_STARTED
+  MATCH_WON
+  MATCH_LOST
+  MATCH_DRAW
+  MATCH_CANCELED
+  LEFT
+  RETURNED
+}
+
 enum PaymentStatus {
   PENDING
   PAID
@@ -114,6 +126,7 @@ model Session {
   players        Player[]
   matches        Match[]
   relationships  PlayerRelationship[]
+  playerLogs     PlayerLog[]
 
   @@index([ownerId])
 }
@@ -133,10 +146,26 @@ model Player {
   createdAt     DateTime     @default(now())
   leftAt        DateTime?
   matchPlayers  MatchPlayer[]
+  logs          PlayerLog[]
 
   @@index([sessionId, status])
   @@index([userId])
   @@unique([sessionId, userId])
+}
+
+model PlayerLog {
+  id        String        @id @default(cuid())
+  sessionId String
+  session   Session       @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  playerId  String
+  player    Player        @relation(fields: [playerId], references: [id], onDelete: Cascade)
+  matchId   String?
+  type      PlayerLogType
+  message   String?
+  createdAt DateTime      @default(now())
+
+  @@index([sessionId, playerId, createdAt])
+  @@index([matchId])
 }
 
 model Match {
@@ -173,6 +202,7 @@ model PlayerRelationship {
   playerBId     String
   partnerCount  Int      @default(0)
   opponentCount Int      @default(0)
+  lockedPair    Boolean  @default(false)
   lastPartnerAt DateTime?
   lastOpponentAt DateTime?
 

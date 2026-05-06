@@ -13,8 +13,25 @@ export async function POST(req: Request, { params }: Params) {
   const body = await req.json();
   const names = String(body.names || body.name || "").split("\n").map((n) => n.trim()).filter(Boolean);
   if (!names.length) return NextResponse.json({ error: "Player name is required" }, { status: 400 });
-  const players = await prisma.$transaction(
-    names.map((name) => prisma.player.create({ data: { sessionId: id, name, skillLevel: body.skillLevel || "INTERMEDIATE", status: "WAITING", waitStartedAt: new Date() } }))
-  );
+  const arrivedAt = new Date();
+  const players = await prisma.$transaction(async (tx) => {
+    const createdPlayers = [];
+    for (const name of names) {
+      const player = await tx.player.create({
+        data: { sessionId: id, name, skillLevel: body.skillLevel || "INTERMEDIATE", status: "WAITING", waitStartedAt: arrivedAt },
+      });
+      createdPlayers.push(player);
+    }
+    await tx.playerLog.createMany({
+      data: createdPlayers.map((player) => ({
+        sessionId: id,
+        playerId: player.id,
+        type: "ARRIVED",
+        message: "Added to the player list.",
+        createdAt: player.createdAt,
+      })),
+    });
+    return createdPlayers;
+  });
   return NextResponse.json(players);
 }

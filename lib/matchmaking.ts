@@ -1,7 +1,9 @@
 import type { Player, PlayerRelationship, Session } from "@prisma/client";
 
 type WaitingPlayer = Pick<Player, "id" | "name" | "skillLevel" | "gamesPlayed" | "waitStartedAt">;
-type PairRel = Pick<PlayerRelationship, "playerAId" | "playerBId" | "partnerCount" | "opponentCount" | "lastPartnerAt">;
+type PairRel = Pick<PlayerRelationship, "playerAId" | "playerBId" | "partnerCount" | "opponentCount" | "lastPartnerAt"> & {
+  lockedPair?: boolean;
+};
 
 type GeneratedMatch = {
   teamA: WaitingPlayer[];
@@ -15,6 +17,10 @@ export type MatchmakingWaitingPlayer = WaitingPlayer;
 export type MatchmakingRelationship = PairRel;
 
 const skillValue = { BEGINNER: 1, INTERMEDIATE: 2, ADVANCED: 3 } as const;
+const CANDIDATE_POOL_SIZE = 16;
+const PARTNER_REPEAT_PRIORITY = 12000;
+const OPPONENT_REPEAT_PRIORITY = 10000;
+const REPEAT_COUNT_WEIGHT = 650;
 
 function relKey(a: string, b: string) {
   return [a, b].sort().join(":");
@@ -54,17 +60,13 @@ function buildLockedPairs(waitingPlayers: WaitingPlayer[], relationships: PairRe
   const playerMap = new Map(sortedWaiting.map((player) => [player.id, player]));
   const used = new Set<string>();
 
-  const historicalPairs = relationships
-    .filter((relationship) => relationship.partnerCount > 0 && waitingIds.has(relationship.playerAId) && waitingIds.has(relationship.playerBId))
-    .sort((a, b) => {
-      const timeA = a.lastPartnerAt ? new Date(a.lastPartnerAt).getTime() : 0;
-      const timeB = b.lastPartnerAt ? new Date(b.lastPartnerAt).getTime() : 0;
-      return timeB - timeA || b.partnerCount - a.partnerCount;
-    });
+  const configuredPairs = relationships.filter(
+    (relationship) => relationship.lockedPair && waitingIds.has(relationship.playerAId) && waitingIds.has(relationship.playerBId),
+  );
 
   const lockedPairs: WaitingPlayer[][] = [];
 
-  for (const relationship of historicalPairs) {
+  for (const relationship of configuredPairs) {
     if (used.has(relationship.playerAId) || used.has(relationship.playerBId)) continue;
     const playerA = playerMap.get(relationship.playerAId);
     const playerB = playerMap.get(relationship.playerBId);
@@ -72,11 +74,6 @@ function buildLockedPairs(waitingPlayers: WaitingPlayer[], relationships: PairRe
     lockedPairs.push([playerA, playerB]);
     used.add(playerA.id);
     used.add(playerB.id);
-  }
-
-  const leftovers = sortedWaiting.filter((player) => !used.has(player.id));
-  for (let index = 0; index + 1 < leftovers.length; index += 2) {
-    lockedPairs.push([leftovers[index], leftovers[index + 1]]);
   }
 
   return lockedPairs;
@@ -109,16 +106,21 @@ function scoreMatch(params: {
   for (const [left, right] of partnerPairs) {
     const rel = getRel(params.relMap, left.id, right.id);
     const repeat = rel?.partnerCount ?? 0;
-    score += repeat * 22;
+    if (repeat > 0) score += PARTNER_REPEAT_PRIORITY;
+    score += repeat * REPEAT_COUNT_WEIGHT;
     if (repeat > 0) reasons.push(`${left.name} and ${right.name} have partnered ${repeat}x`);
   }
 
+  let repeatedOpponentPairs = 0;
   for (const left of params.teamA) {
     for (const right of params.teamB) {
       const repeat = getRel(params.relMap, left.id, right.id)?.opponentCount ?? 0;
-      score += repeat * 8;
+      if (repeat > 0) repeatedOpponentPairs += 1;
+      if (repeat > 0) score += OPPONENT_REPEAT_PRIORITY;
+      score += repeat * REPEAT_COUNT_WEIGHT;
     }
   }
+  if (repeatedOpponentPairs > 0) reasons.push(`${repeatedOpponentPairs} repeated opponent pair${repeatedOpponentPairs === 1 ? "" : "s"}`);
 
   if (params.skillBalancing) {
     const aSkill = params.teamA.reduce((sum, player) => sum + skillValue[player.skillLevel], 0);
@@ -143,13 +145,13 @@ export function generateBestMatch(params: {
 
   const relMap = new Map(params.relationships.map((r) => [relKey(r.playerAId, r.playerBId), r]));
   const minGames = Math.min(...waiting.map((p) => p.gamesPlayed));
-  const candidatePool = waiting.slice(0, Math.min(12, waiting.length));
+  const candidatePool = waiting.slice(0, Math.min(CANDIDATE_POOL_SIZE, waiting.length));
   const shouldBalanceSkills = params.session.skillBalancing || params.session.rotationMode === "SKILL_BALANCED";
 
   let best: GeneratedMatch | null = null;
 
   if (params.session.rotationMode === "LOCKED_PAIRS") {
-    const candidatePairs = buildLockedPairs(candidatePool, params.relationships).slice(0, Math.min(6, Math.floor(candidatePool.length / 2)));
+    const candidatePairs = buildLockedPairs(candidatePool, params.relationships);
     if (candidatePairs.length < 2) return null;
 
     for (const [teamA, teamB] of combos(candidatePairs, 2)) {

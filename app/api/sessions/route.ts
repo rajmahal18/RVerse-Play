@@ -52,7 +52,7 @@ export async function POST(req: Request) {
         }
       }
 
-      return tx.session.create({
+      const session = await tx.session.create({
         data: {
           ownerId: user.id,
           name,
@@ -79,6 +79,17 @@ export async function POST(req: Request) {
           },
         },
       });
+      if (hostJoinsAsPlayer && session.players[0]?.id) {
+        await tx.playerLog.create({
+          data: {
+            sessionId: session.id,
+            playerId: session.players[0].id,
+            type: "ARRIVED",
+            message: "Host joined as a player.",
+          },
+        });
+      }
+      return session;
     });
 
     const response = NextResponse.json(session);

@@ -18,16 +18,44 @@ export async function PATCH(req: Request, { params }: Params) {
   const returningToQueue =
     status === "WAITING" && (existingPlayer.status === "LEFT" || existingPlayer.status === "RESTING");
 
-  const player = await prisma.player.update({
-    where: { id: playerId },
-    data: {
-      name: body.name === undefined ? undefined : String(body.name).trim(),
-      skillLevel: body.skillLevel,
-      claimedByJoin: status === "LEFT" ? false : undefined,
-      status,
-      waitStartedAt: returningToQueue ? new Date() : undefined,
-      leftAt: status === "LEFT" ? new Date() : status === "WAITING" ? null : undefined,
-    },
+  const changedAt = new Date();
+  const player = await prisma.$transaction(async (tx) => {
+    const updated = await tx.player.update({
+      where: { id: playerId },
+      data: {
+        name: body.name === undefined ? undefined : String(body.name).trim(),
+        skillLevel: body.skillLevel,
+        claimedByJoin: status === "LEFT" ? false : undefined,
+        status,
+        waitStartedAt: returningToQueue ? changedAt : undefined,
+        leftAt: status === "LEFT" ? changedAt : status === "WAITING" ? null : undefined,
+      },
+    });
+
+    if (status && status !== existingPlayer.status) {
+      const log =
+        status === "RESTING"
+          ? { type: "RESTED" as const, message: "Moved to rest." }
+          : status === "LEFT"
+            ? { type: "LEFT" as const, message: "Left the session." }
+            : returningToQueue
+              ? { type: "RETURNED" as const, message: "Returned to the queue." }
+              : null;
+
+      if (log) {
+        await tx.playerLog.create({
+          data: {
+            sessionId: id,
+            playerId,
+            type: log.type,
+            message: log.message,
+            createdAt: changedAt,
+          },
+        });
+      }
+    }
+
+    return updated;
   });
   return NextResponse.json(player);
 }

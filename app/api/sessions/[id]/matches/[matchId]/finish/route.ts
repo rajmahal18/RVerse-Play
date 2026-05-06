@@ -48,10 +48,21 @@ export async function POST(req: Request, { params }: Params) {
     const allIds = [...teamA, ...teamB];
 
     if (action === "CANCEL") {
+      const canceledAt = new Date();
       await prisma.$transaction(async (tx) => {
         await tx.player.updateMany({
           where: { id: { in: allIds }, status: "PLAYING" },
-          data: { status: "WAITING", waitStartedAt: new Date() },
+          data: { status: "WAITING", waitStartedAt: canceledAt },
+        });
+        await tx.playerLog.createMany({
+          data: allIds.map((playerId) => ({
+            sessionId: id,
+            playerId,
+            matchId,
+            type: "MATCH_CANCELED",
+            message: `Match on Court ${match.courtNumber} was canceled.`,
+            createdAt: canceledAt,
+          })),
         });
         await tx.match.delete({ where: { id: matchId } });
       });
@@ -78,6 +89,19 @@ export async function POST(req: Request, { params }: Params) {
           data: { status: "WAITING", gamesPlayed: { increment: 1 }, waitStartedAt: completedAt },
         });
       }
+      await tx.playerLog.createMany({
+        data: match.players.map((mp) => {
+          const playerResult = winningTeam ? (mp.team === winningTeam ? "MATCH_WON" : "MATCH_LOST") : "MATCH_DRAW";
+          return {
+            sessionId: id,
+            playerId: mp.playerId,
+            matchId,
+            type: playerResult,
+            message: `Finished match on Court ${match.courtNumber}.`,
+            createdAt: completedAt,
+          };
+        }),
+      });
       for (const team of [teamA, teamB]) {
         if (team.length === 2) await bumpRelationship(tx, id, team[0], team[1], "partner");
       }
