@@ -20,7 +20,7 @@ export async function PUT(req: Request, { params }: Params) {
     const allPlayerIds = pairs.flatMap((pair) => [String(pair?.playerAId || ""), String(pair?.playerBId || "")]).filter(Boolean);
 
     if (new Set(allPlayerIds).size !== allPlayerIds.length) {
-      return NextResponse.json({ error: "A player can only be in one locked pair." }, { status: 400 });
+      return NextResponse.json({ error: "A player can only be in one fixed pair." }, { status: 400 });
     }
 
     const sessionPlayers = await prisma.player.findMany({ where: { sessionId: id }, select: { id: true } });
@@ -32,7 +32,7 @@ export async function PUT(req: Request, { params }: Params) {
       const right = String(pair?.playerBId || "");
       if (!left || !right || left === right) continue;
       if (!sessionPlayerIds.has(left) || !sessionPlayerIds.has(right)) {
-        return NextResponse.json({ error: "Every locked pair must use players from this session." }, { status: 400 });
+        return NextResponse.json({ error: "Every fixed pair must use players from this session." }, { status: 400 });
       }
       normalizedPairs.push(orderedPair(left, right));
     }
@@ -51,8 +51,8 @@ export async function PUT(req: Request, { params }: Params) {
 
     return NextResponse.json({ relationships });
   } catch (error) {
-    console.error("save locked pairs failed", error);
-    const message = error instanceof Error ? error.message : "Could not save locked pairs.";
+    console.error("save fixed pairs failed", error);
+    const message = error instanceof Error ? error.message : "Could not save fixed pairs.";
     return NextResponse.json({ error: message }, { status: 500 });
   }
 }

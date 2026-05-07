@@ -65,7 +65,7 @@ export async function POST(req: Request) {
                 create: {
                   userId: user.id,
                   name: getUserPlayerName(user),
-                  skillLevel: "INTERMEDIATE",
+                  skillLevel: "LOW_INTERMEDIATE",
                   status: "WAITING",
                   waitStartedAt: new Date(),
                 },

@@ -27,8 +27,11 @@ enum SubscriptionStatus {
 
 enum SkillLevel {
   BEGINNER
-  INTERMEDIATE
-  ADVANCED
+  LOW_NOVICE
+  HIGH_NOVICE
+  LOW_INTERMEDIATE
+  HIGH_INTERMEDIATE
+  OPEN
 }
 
 enum PlayerStatus {
@@ -139,7 +142,7 @@ model Player {
   user          User?        @relation(fields: [userId], references: [id], onDelete: SetNull)
   name          String
   claimedByJoin Boolean      @default(false)
-  skillLevel    SkillLevel   @default(INTERMEDIATE)
+  skillLevel    SkillLevel   @default(LOW_INTERMEDIATE)
   status        PlayerStatus @default(WAITING)
   gamesPlayed   Int          @default(0)
   waitStartedAt DateTime     @default(now())

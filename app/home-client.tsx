@@ -29,7 +29,14 @@ const rotationCopy: Record<string, string> = {
   FAIR_ROTATION: "Balanced turns for everyone",
   SKILL_BALANCED: "Keeps team levels closer",
   WINNER_STAYS: "Fast-moving challenge court",
-  LOCKED_PAIRS: "Stable partners each round",
+  LOCKED_PAIRS: "Fixed partners each round",
+};
+
+const rotationLabel: Record<string, string> = {
+  FAIR_ROTATION: "Fair Rotation",
+  SKILL_BALANCED: "Skill Balanced",
+  WINNER_STAYS: "Winner Stays",
+  LOCKED_PAIRS: "Fixed Pairs",
 };
 
 export function HomeClient() {
@@ -156,7 +163,7 @@ export function HomeClient() {
                         <option value="FAIR_ROTATION">Fair Rotation</option>
                         <option value="SKILL_BALANCED">Skill Balanced</option>
                         <option value="WINNER_STAYS">Winner Stays</option>
-                        <option value="LOCKED_PAIRS">Locked Pairs</option>
+                        <option value="LOCKED_PAIRS">Fixed Pairs</option>
                       </Select>
                     </Field>
                     <label className="flex items-start gap-3 border border-[var(--line)] bg-white/85 px-3 py-3">
@@ -183,7 +190,7 @@ export function HomeClient() {
                       <CircleDot size={14} />
                     </div>
                     <div className="min-w-0">
-                      <div className="text-sm font-bold text-[var(--text)]">{rotationMode.replaceAll("_", " ")}</div>
+                      <div className="text-sm font-bold text-[var(--text)]">{rotationLabel[rotationMode] || "Fair Rotation"}</div>
                       <div className="mt-1 text-xs leading-5 text-[var(--muted)]">{rotationCopy[rotationMode] || "Flexible open play rotation."}</div>
                     </div>
                   </div>

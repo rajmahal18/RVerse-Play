@@ -3,6 +3,14 @@ import { prisma } from "@/lib/prisma";
 import { ensureSessionIsActive, requireSessionEditor } from "@/lib/sessions";
 
 type Params = { params: Promise<{ id: string }> };
+const allowedSkillLevels = new Set([
+  "BEGINNER",
+  "LOW_NOVICE",
+  "HIGH_NOVICE",
+  "LOW_INTERMEDIATE",
+  "HIGH_INTERMEDIATE",
+  "OPEN",
+] as const);
 
 export async function POST(req: Request, { params }: Params) {
   const { id } = await params;
@@ -13,12 +21,16 @@ export async function POST(req: Request, { params }: Params) {
   const body = await req.json();
   const names = String(body.names || body.name || "").split("\n").map((n) => n.trim()).filter(Boolean);
   if (!names.length) return NextResponse.json({ error: "Player name is required" }, { status: 400 });
+  const skillLevel = body.skillLevel || "LOW_INTERMEDIATE";
+  if (!allowedSkillLevels.has(skillLevel)) {
+    return NextResponse.json({ error: "Invalid skill level." }, { status: 400 });
+  }
   const arrivedAt = new Date();
   const players = await prisma.$transaction(async (tx) => {
     const createdPlayers = [];
     for (const name of names) {
       const player = await tx.player.create({
-        data: { sessionId: id, name, skillLevel: body.skillLevel || "INTERMEDIATE", status: "WAITING", waitStartedAt: arrivedAt },
+        data: { sessionId: id, name, skillLevel, status: "WAITING", waitStartedAt: arrivedAt },
       });
       createdPlayers.push(player);
     }

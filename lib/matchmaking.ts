@@ -16,7 +16,14 @@ export type MatchmakingSessionConfig = Pick<Session, "skillBalancing" | "rotatio
 export type MatchmakingWaitingPlayer = WaitingPlayer;
 export type MatchmakingRelationship = PairRel;
 
-const skillValue = { BEGINNER: 1, INTERMEDIATE: 2, ADVANCED: 3 } as const;
+const skillValue = {
+  BEGINNER: 1,
+  LOW_NOVICE: 2,
+  HIGH_NOVICE: 3,
+  LOW_INTERMEDIATE: 4,
+  HIGH_INTERMEDIATE: 5,
+  OPEN: 6,
+} as const;
 const CANDIDATE_POOL_SIZE = 16;
 const PARTNER_REPEAT_PRIORITY = 12000;
 const OPPONENT_REPEAT_PRIORITY = 10000;

@@ -28,7 +28,7 @@ import { evaluateMatchup, generateMatchQueue, type MatchmakingRelationship, type
 type Player = {
   id: string;
   name: string;
-  skillLevel: "BEGINNER" | "INTERMEDIATE" | "ADVANCED";
+  skillLevel: "BEGINNER" | "LOW_NOVICE" | "HIGH_NOVICE" | "LOW_INTERMEDIATE" | "HIGH_INTERMEDIATE" | "OPEN";
   status: "WAITING" | "PLAYING" | "RESTING" | "LEFT";
   gamesPlayed: number;
   waitStartedAt: string;
@@ -73,7 +73,28 @@ type PlayerDetailsTab = "matchups" | "results" | "logs";
 type MatchResultChoice = "A" | "B";
 
 const statusTone = { WAITING: "amber", PLAYING: "blue", RESTING: "slate", LEFT: "red" } as const;
-const skillLabel = { BEGINNER: "Beginner", INTERMEDIATE: "Intermediate", ADVANCED: "Advanced" };
+const skillLabel = {
+  BEGINNER: "Beginner",
+  LOW_NOVICE: "Low Novice",
+  HIGH_NOVICE: "High Novice",
+  LOW_INTERMEDIATE: "Low Intermediate",
+  HIGH_INTERMEDIATE: "High Intermediate",
+  OPEN: "Open",
+} as const;
+const skillValue = {
+  BEGINNER: 1,
+  LOW_NOVICE: 2,
+  HIGH_NOVICE: 3,
+  LOW_INTERMEDIATE: 4,
+  HIGH_INTERMEDIATE: 5,
+  OPEN: 6,
+} as const;
+const rotationModeLabel = {
+  FAIR_ROTATION: "Fair Rotation",
+  SKILL_BALANCED: "Skill Balanced",
+  WINNER_STAYS: "Winner Stays",
+  LOCKED_PAIRS: "Fixed Pairs",
+} as const;
 
 function formatClockTime(value?: string | null) {
   if (!value) return "";
@@ -132,7 +153,7 @@ export default function SessionPage({ params }: { params: Promise<{ id: string }
   const [session, setSession] = useState<Session | null>(null);
   const [tab, setTab] = useState<Tab>("queue");
   const [names, setNames] = useState("");
-  const [skillLevel, setSkillLevel] = useState("INTERMEDIATE");
+  const [skillLevel, setSkillLevel] = useState<Player["skillLevel"]>("LOW_INTERMEDIATE");
   const [error, setError] = useState("");
   const [busyAction, setBusyAction] = useState<null | "addPlayers" | "generate" | "startQueued">(null);
   const [selectedPlayerId, setSelectedPlayerId] = useState<string | null>(null);
@@ -216,6 +237,11 @@ export default function SessionPage({ params }: { params: Promise<{ id: string }
     if (pairDraftsDirty) return;
     setPairDrafts(buildPairDrafts(activePlayers, configuredPairs));
   }, [activePlayers, configuredPairs, pairDraftsDirty, session]);
+  useEffect(() => {
+    if (session?.rotationMode !== "LOCKED_PAIRS" && tab === "pairing") {
+      setTab("queue");
+    }
+  }, [session?.rotationMode, tab]);
   const summaryRows = useMemo(() => {
     if (!session) return [];
 
@@ -340,12 +366,19 @@ export default function SessionPage({ params }: { params: Promise<{ id: string }
   async function addPlayers() {
     if (!session?.viewerCanManage) return;
     if (!names.trim()) return;
+    setError("");
     setBusyAction("addPlayers");
-    await fetch(`/api/sessions/${sessionId}/players`, {
+    const res = await fetch(`/api/sessions/${sessionId}/players`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ names, skillLevel }),
     });
+    const data = await readJsonSafe(res);
+    if (!res.ok) {
+      setError(data?.error || "Could not add players.");
+      setBusyAction(null);
+      return;
+    }
     setNames("");
     setBusyAction(null);
     setPlayersSubTab("list");
@@ -490,7 +523,7 @@ export default function SessionPage({ params }: { params: Promise<{ id: string }
       body: JSON.stringify({ pairs }),
     });
     const data = await readJsonSafe(res);
-    if (!res.ok) setError(data?.error || "Could not save locked pairs.");
+    if (!res.ok) setError(data?.error || "Could not save fixed pairs.");
     else setPairDraftsDirty(false);
     setSavingPairs(false);
     void load();
@@ -621,7 +654,7 @@ export default function SessionPage({ params }: { params: Promise<{ id: string }
     { id: "queue", label: "Queue", icon: <ListOrdered size={15} /> },
     { id: "courts", label: "Courts", icon: <Play size={15} /> },
     { id: "players", label: "Players", icon: <Users size={15} /> },
-    ...(canManage ? [{ id: "pairing" as const, label: "Pairing", icon: <UserPlus size={15} /> }] : []),
+    ...(canManage && session.rotationMode === "LOCKED_PAIRS" ? [{ id: "pairing" as const, label: "Fixed Pairs", icon: <UserPlus size={15} /> }] : []),
     { id: "history", label: "History", icon: <History size={15} /> },
     { id: "summary", label: "Summary", icon: <Equal size={15} /> },
     ...(canManage ? [{ id: "settings" as const, label: "Settings", icon: <Settings size={15} /> }] : []),
@@ -644,7 +677,7 @@ export default function SessionPage({ params }: { params: Promise<{ id: string }
                 <div className="mt-1 flex flex-wrap gap-1">
                   <Pill tone="blue">{session.courtCount} courts</Pill>
                   <Pill tone="amber">{waiting.length} waiting</Pill>
-                  <Pill tone="purple">{session.rotationMode.replaceAll("_", " ").toLowerCase()}</Pill>
+                  <Pill tone="purple">{rotationModeLabel[session.rotationMode as keyof typeof rotationModeLabel] || "Fair Rotation"}</Pill>
                 </div>
               </div>
             </div>
@@ -706,7 +739,7 @@ export default function SessionPage({ params }: { params: Promise<{ id: string }
             <div className="space-y-2.5">
               {session.rotationMode === "LOCKED_PAIRS" && waitingUnpairedCount > 0 && (
                 <div className="border border-amber-100 bg-amber-50 px-2.5 py-1.5 text-xs font-semibold text-amber-800">
-                  {waitingUnpairedCount} waiting need saved pairs.
+                  {waitingUnpairedCount} waiting players still need fixed pairs.
                 </div>
               )}
               {queuedMatchups.length ? (
@@ -834,10 +867,13 @@ export default function SessionPage({ params }: { params: Promise<{ id: string }
                         <Textarea rows={5} value={names} onChange={(e) => setNames(e.target.value)} placeholder={"One player per line\nMika\nPaolo\nDani"} />
                       </Field>
                       <Field label="Skill">
-                        <Select value={skillLevel} onChange={(e) => setSkillLevel(e.target.value)}>
+                        <Select value={skillLevel} onChange={(e) => setSkillLevel(e.target.value as Player["skillLevel"])}>
                           <option value="BEGINNER">Beginner</option>
-                          <option value="INTERMEDIATE">Intermediate</option>
-                          <option value="ADVANCED">Advanced</option>
+                          <option value="LOW_NOVICE">Low Novice</option>
+                          <option value="HIGH_NOVICE">High Novice</option>
+                          <option value="LOW_INTERMEDIATE">Low Intermediate</option>
+                          <option value="HIGH_INTERMEDIATE">High Intermediate</option>
+                          <option value="OPEN">Open</option>
                         </Select>
                       </Field>
                     </div>
@@ -906,7 +942,7 @@ export default function SessionPage({ params }: { params: Promise<{ id: string }
                   <option value="FAIR_ROTATION">Fair Rotation</option>
                   <option value="SKILL_BALANCED">Skill Balanced</option>
                   <option value="WINNER_STAYS">Winner Stays</option>
-                  <option value="LOCKED_PAIRS">Locked Pairs</option>
+                  <option value="LOCKED_PAIRS">Fixed Pairs</option>
                 </Select>
               </Field>
               <label className="flex items-center gap-2 rounded-none border border-[var(--line)] bg-white/70 px-3.5 py-3 text-sm font-semibold text-[var(--text)]">
@@ -966,6 +1002,37 @@ export default function SessionPage({ params }: { params: Promise<{ id: string }
       )}
     </main>
   );
+}
+
+function getTeamSkillTotal(players: Pick<Player, "skillLevel">[]) {
+  return players.reduce((sum, player) => sum + skillValue[player.skillLevel], 0);
+}
+
+function getSkillFairness(teamA: Pick<Player, "skillLevel">[], teamB: Pick<Player, "skillLevel">[]) {
+  const teamATotal = getTeamSkillTotal(teamA);
+  const teamBTotal = getTeamSkillTotal(teamB);
+  const gap = Math.abs(teamATotal - teamBTotal);
+  const strongerTeam = teamATotal === teamBTotal ? null : teamATotal > teamBTotal ? "Team A" : "Team B";
+
+  if (gap === 0) {
+    return { label: "Very Fair", tone: "green" as const, compactText: "Very Fair" };
+  }
+
+  if (gap === 1) {
+    return { label: "Fair", tone: "blue" as const, compactText: "Fair" };
+  }
+
+  if (gap === 2) {
+    return { label: `${strongerTeam} slight edge`, tone: "amber" as const, compactText: `${strongerTeam} edge` };
+  }
+
+  return { label: `${strongerTeam} clear edge`, tone: "red" as const, compactText: `${strongerTeam} clear edge` };
+}
+
+function getMatchSkillFairness(match: Match) {
+  const teamA = match.players.filter((entry) => entry.team === "A").map((entry) => entry.player);
+  const teamB = match.players.filter((entry) => entry.team === "B").map((entry) => entry.player);
+  return getSkillFairness(teamA, teamB);
 }
 
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
@@ -1331,6 +1398,7 @@ function MatchBox({
 }) {
   const teamAPlayers = match.players.filter((player) => player.team === "A").map((player) => player.player.name);
   const teamBPlayers = match.players.filter((player) => player.team === "B").map((player) => player.player.name);
+  const fairness = getMatchSkillFairness(match);
 
   return (
     <button
@@ -1347,7 +1415,7 @@ function MatchBox({
           </div>
           <div className="mt-0.5 text-[9px] font-black uppercase tracking-[0.1em] text-white/76">Active</div>
         </div>
-        <div className="bg-white/18 px-2 py-0.5 text-[10px] font-black text-white ring-1 ring-white/24">Playing</div>
+        <div className="bg-white/18 px-2 py-0.5 text-[10px] font-black text-white ring-1 ring-white/24">{fairness.compactText}</div>
       </div>
 
       <div className="relative z-10 px-2.5 pb-2">
@@ -1397,6 +1465,7 @@ function MatchSummary({
 }) {
   const teamA = match.players.filter((player) => player.team === "A").map((player) => player.player.name).join(" + ");
   const teamB = match.players.filter((player) => player.team === "B").map((player) => player.player.name).join(" + ");
+  const fairness = getMatchSkillFairness(match);
   const content = (
     <>
       <div className="mb-2 flex items-center justify-between gap-3">
@@ -1404,7 +1473,10 @@ function MatchSummary({
           <strong className="text-sm font-black text-[var(--text)]">Court {match.courtNumber}</strong>
           <div className="mt-0.5 text-xs font-semibold text-[var(--muted)]">{formatLogTime(match.endedAt ?? match.startedAt)}</div>
         </div>
-        <Pill tone={match.winningTeam ? "green" : "slate"}>{match.winningTeam ? `Team ${match.winningTeam} won` : "No result"}</Pill>
+        <div className="flex shrink-0 flex-wrap justify-end gap-1">
+          <Pill tone={fairness.tone}>{fairness.compactText}</Pill>
+          <Pill tone={match.winningTeam ? "green" : "slate"}>{match.winningTeam ? `Team ${match.winningTeam} won` : "No result"}</Pill>
+        </div>
       </div>
       <div className="space-y-2 text-sm">
         <div className="rounded-none border border-sky-100 bg-[var(--match-a)] px-3 py-2 font-semibold text-sky-900">
@@ -1448,6 +1520,7 @@ function HistoryMatchModal({
 }) {
   const teamA = match.players.filter((player) => player.team === "A").map((player) => player.player.name).join(" + ");
   const teamB = match.players.filter((player) => player.team === "B").map((player) => player.player.name).join(" + ");
+  const fairness = getMatchSkillFairness(match);
 
   return (
     <div className="fixed inset-0 z-50 flex items-end bg-[rgba(17,24,39,0.2)] p-0 sm:items-center sm:justify-center sm:p-4" onClick={onClose}>
@@ -1460,9 +1533,12 @@ function HistoryMatchModal({
             <h3 className="text-base font-black text-[var(--text)]">Court {match.courtNumber}</h3>
             <p className="mt-1 text-sm font-medium text-[var(--muted)]">{formatLogTime(match.endedAt ?? match.startedAt)}</p>
           </div>
-          <Button type="button" variant="plain" onClick={onClose} disabled={busy}>
-            Close
-          </Button>
+          <div className="flex shrink-0 flex-wrap items-center justify-end gap-1">
+            <Pill tone={fairness.tone}>{fairness.compactText}</Pill>
+            <Button type="button" variant="plain" onClick={onClose} disabled={busy}>
+              Close
+            </Button>
+          </div>
         </div>
 
         <div className="mt-3 space-y-2 text-sm">
@@ -1529,12 +1605,15 @@ function QueuedMatchCard({
   const activeDraft = draft ?? fallbackDraft;
   const selectedIds = [...activeDraft.teamAIds, ...activeDraft.teamBIds];
   const selectedPlayers = selectedIds.map((playerId) => waitingPlayerMap.get(playerId)).filter(Boolean) as Player[];
-  const averageGames = selectedPlayers.length
-    ? Math.round(selectedPlayers.reduce((sum, player) => sum + player.gamesPlayed, 0) / selectedPlayers.length)
-    : Math.round(
-        [...matchup.teamA, ...matchup.teamB].reduce((sum, player) => sum + player.gamesPlayed, 0) /
-          [...matchup.teamA, ...matchup.teamB].length,
-      );
+  const activeTeamA =
+    activeDraft.teamAIds.length === 2
+      ? activeDraft.teamAIds.map((playerId) => waitingPlayerMap.get(playerId)).filter(Boolean) as Player[]
+      : matchup.teamA;
+  const activeTeamB =
+    activeDraft.teamBIds.length === 2
+      ? activeDraft.teamBIds.map((playerId) => waitingPlayerMap.get(playerId)).filter(Boolean) as Player[]
+      : matchup.teamB;
+  const fairness = getSkillFairness(activeTeamA, activeTeamB);
 
   return (
     <div className={`overflow-hidden border bg-[linear-gradient(180deg,#ffffff_0%,#f7fbf6_100%)] shadow-[0_12px_24px_rgba(18,41,28,0.05)] ${priority ? "border-emerald-500 shadow-[0_12px_24px_rgba(31,157,114,0.1)]" : "border-[var(--line)]"}`}>
@@ -1544,8 +1623,7 @@ function QueuedMatchCard({
           <div className="mt-0.5 truncate text-[11px] font-medium text-[var(--muted)]">{priority ? "Next open court" : "Queued after previous"}</div>
         </div>
         <div className="flex shrink-0 flex-wrap justify-end gap-1">
-          {priority && <Pill tone="green">first in line</Pill>}
-          <Pill tone="blue">avg {averageGames} games</Pill>
+          <Pill tone={fairness.tone}>{fairness.label}</Pill>
         </div>
       </div>
 
@@ -1760,7 +1838,7 @@ function PairingPanel({
 
   return (
     <Section
-      title="Pairing"
+      title="Fixed Pairs"
       action={
         <div className="flex flex-wrap gap-2">
           <Pill tone="purple">{pairDrafts.length} pairs</Pill>
@@ -1771,7 +1849,7 @@ function PairingPanel({
       <div className="space-y-4">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <div className="text-sm font-semibold leading-6 text-[var(--muted)]">
-            Locked-pairs mode only uses saved pairs. New unpaired players are suggested here by arrival order and must be saved before they can play.
+            Fixed-pairs mode only uses saved pairs. New unpaired players are suggested here by arrival order and must be saved before they can play.
           </div>
           <Button type="button" variant="soft" onClick={onAddPair} disabled={!canAddPair}>
             <Plus size={15} />
@@ -1813,7 +1891,7 @@ function PairingPanel({
             ))}
           </div>
         ) : (
-          <Empty text="No locked pairs configured yet." />
+          <Empty text="No fixed pairs configured yet." />
         )}
 
         {(duplicateIds.size > 0 || incompletePairs > 0) && (
@@ -2161,6 +2239,7 @@ function PlayerResultsList({ player, matches }: { player: Player; matches: Match
         const current = match.players.find((entry) => entry.player.id === player.id)!;
         const teammates = match.players.filter((entry) => entry.team === current.team).map((entry) => entry.player.name).join(" + ");
         const opponents = match.players.filter((entry) => entry.team !== current.team).map((entry) => entry.player.name).join(" + ");
+        const fairness = getMatchSkillFairness(match);
         const resultLabel = match.status === "ACTIVE" ? "Live" : current.result === "WIN" ? "Win" : current.result === "LOSS" ? "Loss" : "No result";
         const resultTone =
           resultLabel === "Win"
@@ -2180,9 +2259,12 @@ function PlayerResultsList({ player, matches }: { player: Player; matches: Match
                 <strong className="text-sm font-black text-[var(--text)]">Court {match.courtNumber}</strong>
                 <div className="mt-0.5 text-xs font-semibold text-[var(--muted)]">{formatLogTime(match.startedAt)}</div>
               </div>
-              <div className={`inline-flex items-center gap-1.5 rounded-none bg-white/90 px-2.5 py-1 text-xs font-bold ${resultTextTone}`}>
-                <ResultIcon size={14} />
-                {resultLabel}
+              <div className="flex shrink-0 flex-wrap items-center justify-end gap-1">
+                <Pill tone={fairness.tone}>{fairness.compactText}</Pill>
+                <div className={`inline-flex items-center gap-1.5 rounded-none bg-white/90 px-2.5 py-1 text-xs font-bold ${resultTextTone}`}>
+                  <ResultIcon size={14} />
+                  {resultLabel}
+                </div>
               </div>
             </div>
             <div className="space-y-2 text-sm">
