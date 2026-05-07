@@ -4,6 +4,7 @@ export function Button({
   className,
   variant = "primary",
   loading = false,
+  type = "button",
   children,
   disabled,
   ...props
@@ -18,6 +19,7 @@ export function Button({
         variant === "plain" && "text-[var(--muted)] hover:bg-white/70 hover:text-[var(--text)]",
         className,
       )}
+      type={type}
       disabled={disabled || loading}
       aria-busy={loading}
       {...props}

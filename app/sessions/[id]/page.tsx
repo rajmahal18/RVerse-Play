@@ -70,6 +70,7 @@ type PairDraft = { playerAId: string; playerBId: string; suggested?: boolean };
 type Tab = "queue" | "courts" | "summary" | "players" | "pairing" | "history" | "settings";
 type SummarySortKey = "games" | "wins" | "losses";
 type PlayerDetailsTab = "matchups" | "results" | "logs";
+type MatchResultChoice = "A" | "B";
 
 const statusTone = { WAITING: "amber", PLAYING: "blue", RESTING: "slate", LEFT: "red" } as const;
 const skillLabel = { BEGINNER: "Beginner", INTERMEDIATE: "Intermediate", ADVANCED: "Advanced" };
@@ -139,6 +140,7 @@ export default function SessionPage({ params }: { params: Promise<{ id: string }
   const [pendingPlayerId, setPendingPlayerId] = useState<string | null>(null);
   const [confirmPlayerAction, setConfirmPlayerAction] = useState<{ player: Player; status: Player["status"] } | null>(null);
   const [resultMatch, setResultMatch] = useState<Match | null>(null);
+  const [historyMatch, setHistoryMatch] = useState<Match | null>(null);
   const [pendingMatchId, setPendingMatchId] = useState<string | null>(null);
   const [savingSettings, setSavingSettings] = useState(false);
   const [endingSession, setEndingSession] = useState(false);
@@ -153,6 +155,7 @@ export default function SessionPage({ params }: { params: Promise<{ id: string }
     direction: "desc",
   });
   const [queueDrafts, setQueueDrafts] = useState<QueueDraft[]>([]);
+  const isQueueEditing = queueDrafts.some((draft) => draft.editing);
 
   useEffect(() => {
     void params.then((p) => setSessionId(p.id));
@@ -176,13 +179,18 @@ export default function SessionPage({ params }: { params: Promise<{ id: string }
   useEffect(() => {
     if (!sessionId) return;
     const interval = window.setInterval(() => {
+      if (isQueueEditing) return;
       void load(sessionId);
     }, 5000);
     return () => window.clearInterval(interval);
-  }, [sessionId]);
+  }, [isQueueEditing, sessionId]);
 
   const activeMatches = useMemo(
     () => session?.matches.filter((match) => match.status === "ACTIVE").sort((a, b) => a.courtNumber - b.courtNumber) ?? [],
+    [session],
+  );
+  const finishedMatches = useMemo(
+    () => session?.matches.filter((match) => match.status === "FINISHED").sort((a, b) => new Date(b.endedAt ?? b.startedAt).getTime() - new Date(a.endedAt ?? a.startedAt).getTime()) ?? [],
     [session],
   );
   const waiting = useMemo(
@@ -267,8 +275,9 @@ export default function SessionPage({ params }: { params: Promise<{ id: string }
     }));
   }, [session, waiting]);
   useEffect(() => {
+    if (isQueueEditing) return;
     setQueueDrafts(toQueueDrafts(queuedMatchups));
-  }, [queuedMatchups]);
+  }, [isQueueEditing, queuedMatchups]);
 
   const waitingPlayerMap = useMemo(() => new Map(waiting.map((player) => [player.id, player])), [waiting]);
   const matchmakingConfig = useMemo<MatchmakingSessionConfig | null>(
@@ -487,7 +496,7 @@ export default function SessionPage({ params }: { params: Promise<{ id: string }
     void load();
   }
 
-  async function finish(matchId: string, result: "A" | "B" | "DRAW") {
+  async function finish(matchId: string, result: "A" | "B") {
     if (!session?.viewerCanManage) return;
     setPendingMatchId(matchId);
     setResultMatch(null);
@@ -524,6 +533,45 @@ export default function SessionPage({ params }: { params: Promise<{ id: string }
     }
     setError("");
     setPendingMatchId(null);
+    void load();
+  }
+
+  async function updateHistoryMatchResult(matchId: string, result: MatchResultChoice) {
+    if (!session?.viewerCanManage) return;
+    setPendingMatchId(matchId);
+    const res = await fetch(`/api/sessions/${sessionId}/matches/${matchId}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ result }),
+    });
+    const data = await readJsonSafe(res);
+    if (!res.ok) {
+      setError(data?.error || "Could not update match result.");
+      setPendingMatchId(null);
+      return;
+    }
+    setError("");
+    setPendingMatchId(null);
+    setHistoryMatch(null);
+    void load();
+  }
+
+  async function deleteHistoryMatch(matchId: string) {
+    if (!session?.viewerCanManage) return;
+    if (!window.confirm("Delete this finished match from history?")) return;
+    setPendingMatchId(matchId);
+    const res = await fetch(`/api/sessions/${sessionId}/matches/${matchId}`, {
+      method: "DELETE",
+    });
+    const data = await readJsonSafe(res);
+    if (!res.ok) {
+      setError(data?.error || "Could not delete match.");
+      setPendingMatchId(null);
+      return;
+    }
+    setError("");
+    setPendingMatchId(null);
+    setHistoryMatch(null);
     void load();
   }
 
@@ -822,10 +870,12 @@ export default function SessionPage({ params }: { params: Promise<{ id: string }
         )}
 
         {tab === "history" && (
-          <Section title="Match History" action={<Pill tone="purple">{session.matches.filter((match) => match.status === "FINISHED").length} done</Pill>}>
+          <Section title="Match History" action={<Pill tone="purple">{finishedMatches.length} done</Pill>}>
             <div className="space-y-3">
-              {session.matches.filter((match) => match.status === "FINISHED").map((match) => <MatchSummary key={match.id} match={match} />)}
-              {!session.matches.filter((match) => match.status === "FINISHED").length && <Empty text="Finished matches will settle here once courts wrap up." />}
+              {finishedMatches.map((match) => (
+                <MatchSummary key={match.id} match={match} clickable={canManage} onOpen={() => setHistoryMatch(match)} />
+              ))}
+              {!finishedMatches.length && <Empty text="Finished matches will settle here once courts wrap up." />}
             </div>
           </Section>
         )}
@@ -863,7 +913,7 @@ export default function SessionPage({ params }: { params: Promise<{ id: string }
                 <input name="skillBalancing" type="checkbox" defaultChecked={session.skillBalancing} />
                 Skill balancing
               </label>
-              <Button loading={savingSettings}>Save settings</Button>
+              <Button type="submit" loading={savingSettings}>Save settings</Button>
               </form>
             </div>
           </Section>
@@ -903,6 +953,15 @@ export default function SessionPage({ params }: { params: Promise<{ id: string }
           onCancel={() => setResultMatch(null)}
           onFinish={finish}
           onVoid={cancelMatch}
+        />
+      )}
+      {historyMatch && (
+        <HistoryMatchModal
+          match={historyMatch}
+          busy={pendingMatchId === historyMatch.id}
+          onClose={() => setHistoryMatch(null)}
+          onUpdateResult={updateHistoryMatchResult}
+          onDelete={deleteHistoryMatch}
         />
       )}
     </main>
@@ -1175,9 +1234,10 @@ function MatchResultModal({
   match: Match;
   busy: boolean;
   onCancel: () => void;
-  onFinish: (matchId: string, result: "A" | "B" | "DRAW") => void;
+  onFinish: (matchId: string, result: "A" | "B") => void;
   onVoid: (matchId: string) => void;
 }) {
+  const [confirmCancelOpen, setConfirmCancelOpen] = useState(false);
   const teamA = match.players.filter((player) => player.team === "A").map((player) => player.player.name).join(" + ");
   const teamB = match.players.filter((player) => player.team === "B").map((player) => player.player.name).join(" + ");
 
@@ -1190,9 +1250,9 @@ function MatchResultModal({
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
             <h3 className="text-base font-black text-[var(--text)]">Court {match.courtNumber}</h3>
-            <p className="mt-1 text-sm font-medium text-[var(--muted)]">Choose result</p>
+            <p className="mt-1 text-sm font-medium text-[var(--muted)]">Choose winning team</p>
           </div>
-          <Button type="button" variant="plain" onClick={onCancel} disabled={busy}>
+          <Button type="button" variant="danger" className="min-h-8 px-3 py-1.5 text-xs sm:text-sm" onClick={onCancel} disabled={busy}>
             Close
           </Button>
         </div>
@@ -1213,13 +1273,46 @@ function MatchResultModal({
           <Button type="button" onClick={() => onFinish(match.id, "B")} loading={busy}>
             B wins
           </Button>
-          <Button type="button" variant="soft" onClick={() => onFinish(match.id, "DRAW")} disabled={busy}>
-            Draw
-          </Button>
-          <Button type="button" variant="danger" onClick={() => onVoid(match.id)} loading={busy}>
+          <Button
+            type="button"
+            className="col-span-2"
+            variant="danger"
+            onClick={() => setConfirmCancelOpen(true)}
+            disabled={busy}
+          >
             Cancel match
           </Button>
         </div>
+
+        {confirmCancelOpen && (
+          <div className="fixed inset-0 z-[60] flex items-end bg-[rgba(17,24,39,0.28)] p-0 sm:items-center sm:justify-center sm:p-4" onClick={() => setConfirmCancelOpen(false)}>
+            <div
+              className="w-full border border-[var(--line)] bg-white px-4 py-4 shadow-[0_18px_44px_rgba(18,41,28,0.18)] sm:max-w-sm"
+              onClick={(event) => event.stopPropagation()}
+            >
+              <h4 className="text-base font-black text-[var(--text)]">Cancel this match?</h4>
+              <p className="mt-1 text-sm font-medium leading-6 text-[var(--muted)]">
+                The current court assignment will be removed and these players will return to the front of the waiting queue.
+              </p>
+              <div className="mt-4 grid grid-cols-2 gap-2">
+                <Button type="button" variant="soft" onClick={() => setConfirmCancelOpen(false)} disabled={busy}>
+                  Keep match
+                </Button>
+                <Button
+                  type="button"
+                  variant="danger"
+                  onClick={() => {
+                    setConfirmCancelOpen(false);
+                    onVoid(match.id);
+                  }}
+                  loading={busy}
+                >
+                  Confirm cancel
+                </Button>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );
@@ -1293,15 +1386,25 @@ function CourtPlayerSlot({ name }: { name?: string }) {
   );
 }
 
-function MatchSummary({ match }: { match: Match }) {
+function MatchSummary({
+  match,
+  clickable = false,
+  onOpen,
+}: {
+  match: Match;
+  clickable?: boolean;
+  onOpen?: () => void;
+}) {
   const teamA = match.players.filter((player) => player.team === "A").map((player) => player.player.name).join(" + ");
   const teamB = match.players.filter((player) => player.team === "B").map((player) => player.player.name).join(" + ");
-
-  return (
-    <div className="rounded-none border border-[var(--line)] bg-white/80 px-4 py-3 shadow-[0_10px_20px_rgba(18,41,28,0.04)]">
+  const content = (
+    <>
       <div className="mb-2 flex items-center justify-between gap-3">
-        <strong className="text-sm font-black text-[var(--text)]">Court {match.courtNumber}</strong>
-        <Pill tone="green">{match.winningTeam ? `Team ${match.winningTeam} won` : "Draw"}</Pill>
+        <div>
+          <strong className="text-sm font-black text-[var(--text)]">Court {match.courtNumber}</strong>
+          <div className="mt-0.5 text-xs font-semibold text-[var(--muted)]">{formatLogTime(match.endedAt ?? match.startedAt)}</div>
+        </div>
+        <Pill tone={match.winningTeam ? "green" : "slate"}>{match.winningTeam ? `Team ${match.winningTeam} won` : "No result"}</Pill>
       </div>
       <div className="space-y-2 text-sm">
         <div className="rounded-none border border-sky-100 bg-[var(--match-a)] px-3 py-2 font-semibold text-sky-900">
@@ -1309,6 +1412,78 @@ function MatchSummary({ match }: { match: Match }) {
         </div>
         <div className="rounded-none border border-lime-100 bg-[var(--match-b)] px-3 py-2 font-semibold text-lime-900">
           Team B: {teamB}
+        </div>
+      </div>
+      {clickable && <div className="mt-2 text-xs font-semibold text-[var(--muted)]">Tap to edit result or delete this entry.</div>}
+    </>
+  );
+
+  if (clickable) {
+    return (
+      <button
+        type="button"
+        onClick={onOpen}
+        className="block w-full rounded-none border border-[var(--line)] bg-white/80 px-4 py-3 text-left shadow-[0_10px_20px_rgba(18,41,28,0.04)] transition hover:bg-white"
+      >
+        {content}
+      </button>
+    );
+  }
+
+  return <div className="rounded-none border border-[var(--line)] bg-white/80 px-4 py-3 shadow-[0_10px_20px_rgba(18,41,28,0.04)]">{content}</div>;
+}
+
+function HistoryMatchModal({
+  match,
+  busy,
+  onClose,
+  onUpdateResult,
+  onDelete,
+}: {
+  match: Match;
+  busy: boolean;
+  onClose: () => void;
+  onUpdateResult: (matchId: string, result: MatchResultChoice) => void;
+  onDelete: (matchId: string) => void;
+}) {
+  const teamA = match.players.filter((player) => player.team === "A").map((player) => player.player.name).join(" + ");
+  const teamB = match.players.filter((player) => player.team === "B").map((player) => player.player.name).join(" + ");
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-end bg-[rgba(17,24,39,0.2)] p-0 sm:items-center sm:justify-center sm:p-4" onClick={onClose}>
+      <div
+        className="w-full border border-[var(--line)] bg-white px-4 py-4 shadow-[0_18px_44px_rgba(18,41,28,0.18)] sm:max-w-md"
+        onClick={(event) => event.stopPropagation()}
+      >
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <h3 className="text-base font-black text-[var(--text)]">Court {match.courtNumber}</h3>
+            <p className="mt-1 text-sm font-medium text-[var(--muted)]">{formatLogTime(match.endedAt ?? match.startedAt)}</p>
+          </div>
+          <Button type="button" variant="plain" onClick={onClose} disabled={busy}>
+            Close
+          </Button>
+        </div>
+
+        <div className="mt-3 space-y-2 text-sm">
+          <div className="rounded-none border border-sky-100 bg-[var(--match-a)] px-3 py-2 font-semibold text-sky-900">
+            Team A: {teamA}
+          </div>
+          <div className="rounded-none border border-lime-100 bg-[var(--match-b)] px-3 py-2 font-semibold text-lime-900">
+            Team B: {teamB}
+          </div>
+        </div>
+
+        <div className="mt-4 grid grid-cols-2 gap-2">
+          <Button type="button" onClick={() => onUpdateResult(match.id, "A")} loading={busy}>
+            Team A won
+          </Button>
+          <Button type="button" onClick={() => onUpdateResult(match.id, "B")} loading={busy}>
+            Team B won
+          </Button>
+          <Button type="button" variant="danger" onClick={() => onDelete(match.id)} loading={busy}>
+            Delete match
+          </Button>
         </div>
       </div>
     </div>
@@ -1719,7 +1894,6 @@ function LegacyPlayerDetailsSheet({
   const opponentCounts = new Map<string, number>();
   let wins = 0;
   let losses = 0;
-  let draws = 0;
   let live = 0;
 
   for (const match of playerMatches) {
@@ -1731,7 +1905,6 @@ function LegacyPlayerDetailsSheet({
     if (match.status === "ACTIVE") live++;
     else if (current.result === "WIN") wins++;
     else if (current.result === "LOSS") losses++;
-    else draws++;
 
     for (const teammate of teammates) {
       teammateCounts.set(teammate, (teammateCounts.get(teammate) ?? 0) + 1);
@@ -1745,7 +1918,7 @@ function LegacyPlayerDetailsSheet({
   const allOpponents = [...opponentCounts.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
   const partnerLine = allPartners.length ? allPartners.map(([name, count]) => `${name} (${count}x)`).join(", ") : "No partners yet";
   const opponentLine = allOpponents.length ? allOpponents.map(([name, count]) => `${name} (${count}x)`).join(", ") : "No opponents yet";
-  const recordLine = `${wins}W • ${losses}L • ${draws}D${live ? ` • ${live} live` : ""}`;
+  const recordLine = `${wins}W • ${losses}L${live ? ` • ${live} live` : ""}`;
 
   return (
     <div className="fixed inset-0 z-40 flex items-end bg-[rgba(17,24,39,0.18)] p-0 sm:items-center sm:justify-center sm:p-6" onClick={onClose}>
@@ -1802,7 +1975,7 @@ function LegacyPlayerDetailsSheet({
                         ? "Win"
                         : current.result === "LOSS"
                           ? "Loss"
-                          : "Draw";
+                          : "No result";
                   const resultTone =
                     resultLabel === "Win"
                       ? "border-emerald-200 bg-emerald-50/60"
@@ -1812,7 +1985,7 @@ function LegacyPlayerDetailsSheet({
                           ? "border-sky-200 bg-sky-50/60"
                           : "border-slate-200 bg-slate-50/70";
                   const ResultIcon =
-                    resultLabel === "Win" ? CheckCircle2 : resultLabel === "Loss" ? XCircle : resultLabel === "Draw" ? Equal : Zap;
+                    resultLabel === "Win" ? CheckCircle2 : resultLabel === "Loss" ? XCircle : resultLabel === "Live" ? Zap : Equal;
                   const resultTextTone =
                     resultLabel === "Win"
                       ? "text-emerald-700"
@@ -1870,7 +2043,6 @@ function PlayerDetailsSheet({
   const opponentCounts = new Map<string, number>();
   let wins = 0;
   let losses = 0;
-  let draws = 0;
   let live = 0;
 
   for (const match of playerMatches) {
@@ -1881,7 +2053,6 @@ function PlayerDetailsSheet({
     if (match.status === "ACTIVE") live++;
     else if (current.result === "WIN") wins++;
     else if (current.result === "LOSS") losses++;
-    else draws++;
     for (const teammate of teammates) teammateCounts.set(teammate, (teammateCounts.get(teammate) ?? 0) + 1);
     for (const opponent of opponents) opponentCounts.set(opponent, (opponentCounts.get(opponent) ?? 0) + 1);
   }
@@ -1889,7 +2060,7 @@ function PlayerDetailsSheet({
   const allPartners = [...teammateCounts.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
   const allOpponents = [...opponentCounts.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
   const playerLogs = buildPlayerLogs({ player, matches: playerMatches, logs });
-  const recordLine = `${wins}W - ${losses}L - ${draws}D${live ? ` - ${live} live` : ""}`;
+  const recordLine = `${wins}W - ${losses}L${live ? ` - ${live} live` : ""}`;
   const tabs: { id: PlayerDetailsTab; label: string; count: number }[] = [
     { id: "matchups", label: "Matchups", count: allPartners.length + allOpponents.length },
     { id: "results", label: "Results", count: playerMatches.length },
@@ -1990,7 +2161,7 @@ function PlayerResultsList({ player, matches }: { player: Player; matches: Match
         const current = match.players.find((entry) => entry.player.id === player.id)!;
         const teammates = match.players.filter((entry) => entry.team === current.team).map((entry) => entry.player.name).join(" + ");
         const opponents = match.players.filter((entry) => entry.team !== current.team).map((entry) => entry.player.name).join(" + ");
-        const resultLabel = match.status === "ACTIVE" ? "Live" : current.result === "WIN" ? "Win" : current.result === "LOSS" ? "Loss" : "Draw";
+        const resultLabel = match.status === "ACTIVE" ? "Live" : current.result === "WIN" ? "Win" : current.result === "LOSS" ? "Loss" : "No result";
         const resultTone =
           resultLabel === "Win"
             ? "border-emerald-200 bg-emerald-50/60"
@@ -1999,7 +2170,7 @@ function PlayerResultsList({ player, matches }: { player: Player; matches: Match
               : resultLabel === "Live"
                 ? "border-sky-200 bg-sky-50/60"
                 : "border-slate-200 bg-slate-50/70";
-        const ResultIcon = resultLabel === "Win" ? CheckCircle2 : resultLabel === "Loss" ? XCircle : resultLabel === "Draw" ? Equal : Zap;
+        const ResultIcon = resultLabel === "Win" ? CheckCircle2 : resultLabel === "Loss" ? XCircle : resultLabel === "Live" ? Zap : Equal;
         const resultTextTone = resultLabel === "Win" ? "text-emerald-700" : resultLabel === "Loss" ? "text-red-700" : resultLabel === "Live" ? "text-sky-700" : "text-slate-700";
 
         return (
@@ -2059,8 +2230,8 @@ function buildPlayerLogs({ player, matches, logs }: { player: Player; matches: M
       events.push({ id: `${match.id}-started`, type: "MATCH_STARTED", title: "Started match", detail: `Started on Court ${match.courtNumber}.`, createdAt: match.startedAt });
     }
     if (match.status === "FINISHED" && match.endedAt) {
-      const type: PlayerLog["type"] = current.result === "WIN" ? "MATCH_WON" : current.result === "LOSS" ? "MATCH_LOST" : "MATCH_DRAW";
-      if (!eventKeys.has(`${match.id}:${type}`)) {
+      const type: PlayerLog["type"] | null = current.result === "WIN" ? "MATCH_WON" : current.result === "LOSS" ? "MATCH_LOST" : null;
+      if (type && !eventKeys.has(`${match.id}:${type}`)) {
         events.push({ id: `${match.id}-${type}`, type, title: getLogTitle(type), detail: `Finished on Court ${match.courtNumber}.`, createdAt: match.endedAt });
       }
     }
@@ -2080,7 +2251,7 @@ function getLogTitle(type: PlayerLog["type"]) {
     MATCH_STARTED: "Started match",
     MATCH_WON: "Won match",
     MATCH_LOST: "Lost match",
-    MATCH_DRAW: "Match draw",
+    MATCH_DRAW: "No result",
     MATCH_CANCELED: "Match canceled",
     LEFT: "Left",
     RETURNED: "Returned",

@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import type { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
+import { getPlayerResult, getWinningTeamFromResult, syncFinishedMatchLogs } from "@/lib/match-history";
 import { orderedPair } from "@/lib/matchmaking";
 import { ensureSessionIsActive, requireSessionEditor } from "@/lib/sessions";
 
@@ -37,7 +38,7 @@ export async function POST(req: Request, { params }: Params) {
     if (!activeSession.ok) return NextResponse.json({ error: activeSession.error }, { status: activeSession.status });
     const body = await req.json();
     const action = body.action === "CANCEL" ? "CANCEL" : "FINISH";
-    const result = body.result === "A" || body.result === "B" || body.result === "DRAW" ? body.result : null;
+    const result = body.result === "A" || body.result === "B" ? body.result : null;
 
     const match = await prisma.match.findUnique({ where: { id: matchId }, include: { players: true } });
     if (!match || match.sessionId !== id) return NextResponse.json({ error: "Match not found" }, { status: 404 });
@@ -50,10 +51,22 @@ export async function POST(req: Request, { params }: Params) {
     if (action === "CANCEL") {
       const canceledAt = new Date();
       await prisma.$transaction(async (tx) => {
-        await tx.player.updateMany({
-          where: { id: { in: allIds }, status: "PLAYING" },
-          data: { status: "WAITING", waitStartedAt: canceledAt },
+        const firstWaitingPlayer = await tx.player.findFirst({
+          where: { sessionId: id, status: "WAITING" },
+          orderBy: [{ waitStartedAt: "asc" }, { gamesPlayed: "asc" }, { createdAt: "asc" }],
+          select: { waitStartedAt: true },
         });
+        const anchorTime = firstWaitingPlayer?.waitStartedAt ?? canceledAt;
+
+        for (const [index, playerId] of allIds.entries()) {
+          await tx.player.update({
+            where: { id: playerId },
+            data: {
+              status: "WAITING",
+              waitStartedAt: new Date(anchorTime.getTime() - (allIds.length - index) * 1000),
+            },
+          });
+        }
         await tx.playerLog.createMany({
           data: allIds.map((playerId) => ({
             sessionId: id,
@@ -71,16 +84,16 @@ export async function POST(req: Request, { params }: Params) {
     }
 
     if (!result) {
-      return NextResponse.json({ error: "Choose the result before finishing the match." }, { status: 400 });
+      return NextResponse.json({ error: "Choose the winning team before finishing the match." }, { status: 400 });
     }
 
-    const winningTeam = result === "A" || result === "B" ? result : null;
+    const winningTeam = getWinningTeamFromResult(result);
     const completedAt = new Date();
 
     await prisma.$transaction(async (tx) => {
       await tx.match.update({ where: { id: matchId }, data: { status: "FINISHED", endedAt: completedAt, winningTeam } });
       for (const mp of match.players) {
-        const playerResult = winningTeam ? (mp.team === winningTeam ? "WIN" : "LOSS") : "NONE";
+        const playerResult = getPlayerResult(mp.team, winningTeam);
         await tx.matchPlayer.update({ where: { id: mp.id }, data: { result: playerResult } });
       }
       for (const playerId of allIds) {
@@ -89,18 +102,13 @@ export async function POST(req: Request, { params }: Params) {
           data: { status: "WAITING", gamesPlayed: { increment: 1 }, waitStartedAt: completedAt },
         });
       }
-      await tx.playerLog.createMany({
-        data: match.players.map((mp) => {
-          const playerResult = winningTeam ? (mp.team === winningTeam ? "MATCH_WON" : "MATCH_LOST") : "MATCH_DRAW";
-          return {
-            sessionId: id,
-            playerId: mp.playerId,
-            matchId,
-            type: playerResult,
-            message: `Finished match on Court ${match.courtNumber}.`,
-            createdAt: completedAt,
-          };
-        }),
+      await syncFinishedMatchLogs(tx, {
+        sessionId: id,
+        matchId,
+        courtNumber: match.courtNumber,
+        completedAt,
+        winningTeam,
+        players: match.players.map((player) => ({ playerId: player.playerId, team: player.team })),
       });
       for (const team of [teamA, teamB]) {
         if (team.length === 2) await bumpRelationship(tx, id, team[0], team[1], "partner");
