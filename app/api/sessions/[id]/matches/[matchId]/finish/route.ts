@@ -1,31 +1,30 @@
 import { NextResponse } from "next/server";
-import type { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
-import { getPlayerResult, getWinningTeamFromResult, syncFinishedMatchLogs } from "@/lib/match-history";
+import { getPlayerLogType, getPlayerResult, getWinningTeamFromResult } from "@/lib/match-history";
 import { orderedPair } from "@/lib/matchmaking";
 import { ensureSessionIsActive, requireSessionEditor } from "@/lib/sessions";
 
 type Params = { params: Promise<{ id: string; matchId: string }> };
 
 async function bumpRelationship(
-  tx: Prisma.TransactionClient,
   sessionId: string,
   a: string,
   b: string,
   type: "partner" | "opponent",
+  eventAt: Date,
 ) {
   const pair = orderedPair(a, b);
-  await tx.playerRelationship.upsert({
+  await prisma.playerRelationship.upsert({
     where: { sessionId_playerAId_playerBId: { sessionId, ...pair } },
     create: {
       sessionId,
       ...pair,
       partnerCount: type === "partner" ? 1 : 0,
       opponentCount: type === "opponent" ? 1 : 0,
-      lastPartnerAt: type === "partner" ? new Date() : null,
-      lastOpponentAt: type === "opponent" ? new Date() : null,
+      lastPartnerAt: type === "partner" ? eventAt : null,
+      lastOpponentAt: type === "opponent" ? eventAt : null,
     },
-    update: type === "partner" ? { partnerCount: { increment: 1 }, lastPartnerAt: new Date() } : { opponentCount: { increment: 1 }, lastOpponentAt: new Date() },
+    update: type === "partner" ? { partnerCount: { increment: 1 }, lastPartnerAt: eventAt } : { opponentCount: { increment: 1 }, lastOpponentAt: eventAt },
   });
 }
 
@@ -40,8 +39,8 @@ export async function POST(req: Request, { params }: Params) {
     const action = body.action === "CANCEL" ? "CANCEL" : "FINISH";
     const result = body.result === "A" || body.result === "B" ? body.result : null;
 
-    const match = await prisma.match.findUnique({ where: { id: matchId }, include: { players: true } });
-    if (!match || match.sessionId !== id) return NextResponse.json({ error: "Match not found" }, { status: 404 });
+    const match = await prisma.match.findFirst({ where: { id: matchId, sessionId: id }, include: { players: true } });
+    if (!match) return NextResponse.json({ error: "Match not found. Refresh the session and try again." }, { status: 404 });
     if (match.status === "FINISHED") return NextResponse.json({ error: "Match already finished" }, { status: 400 });
 
     const teamA = match.players.filter((p) => p.team === "A").map((p) => p.playerId);
@@ -50,35 +49,35 @@ export async function POST(req: Request, { params }: Params) {
 
     if (action === "CANCEL") {
       const canceledAt = new Date();
-      await prisma.$transaction(async (tx) => {
-        const firstWaitingPlayer = await tx.player.findFirst({
-          where: { sessionId: id, status: "WAITING" },
-          orderBy: [{ waitStartedAt: "asc" }, { gamesPlayed: "asc" }, { createdAt: "asc" }],
-          select: { waitStartedAt: true },
-        });
-        const anchorTime = firstWaitingPlayer?.waitStartedAt ?? canceledAt;
+      const firstWaitingPlayer = await prisma.player.findFirst({
+        where: { sessionId: id, status: "WAITING" },
+        orderBy: [{ waitStartedAt: "asc" }, { gamesPlayed: "asc" }, { createdAt: "asc" }],
+        select: { waitStartedAt: true },
+      });
+      const anchorTime = firstWaitingPlayer?.waitStartedAt ?? canceledAt;
 
-        for (const [index, playerId] of allIds.entries()) {
-          await tx.player.update({
+      await Promise.all(
+        allIds.map((playerId, index) =>
+          prisma.player.update({
             where: { id: playerId },
             data: {
               status: "WAITING",
               waitStartedAt: new Date(anchorTime.getTime() - (allIds.length - index) * 1000),
             },
-          });
-        }
-        await tx.playerLog.createMany({
-          data: allIds.map((playerId) => ({
-            sessionId: id,
-            playerId,
-            matchId,
-            type: "MATCH_CANCELED",
-            message: `Match on Court ${match.courtNumber} was canceled.`,
-            createdAt: canceledAt,
-          })),
-        });
-        await tx.match.delete({ where: { id: matchId } });
+          })
+        )
+      );
+      await prisma.playerLog.createMany({
+        data: allIds.map((playerId) => ({
+          sessionId: id,
+          playerId,
+          matchId,
+          type: "MATCH_CANCELED",
+          message: `Match on Court ${match.courtNumber} was canceled.`,
+          createdAt: canceledAt,
+        })),
       });
+      await prisma.match.delete({ where: { id: matchId } });
 
       return NextResponse.json({ ok: true, canceled: true });
     }
@@ -90,31 +89,43 @@ export async function POST(req: Request, { params }: Params) {
     const winningTeam = getWinningTeamFromResult(result);
     const completedAt = new Date();
 
-    await prisma.$transaction(async (tx) => {
-      await tx.match.update({ where: { id: matchId }, data: { status: "FINISHED", endedAt: completedAt, winningTeam } });
-      for (const mp of match.players) {
-        const playerResult = getPlayerResult(mp.team, winningTeam);
-        await tx.matchPlayer.update({ where: { id: mp.id }, data: { result: playerResult } });
-      }
-      for (const playerId of allIds) {
-        await tx.player.update({
+    await prisma.match.update({ where: { id: matchId }, data: { status: "FINISHED", endedAt: completedAt, winningTeam } });
+    await Promise.all(
+      match.players.map((mp) =>
+        prisma.matchPlayer.update({
+          where: { id: mp.id },
+          data: { result: getPlayerResult(mp.team, winningTeam) },
+        })
+      )
+    );
+    await Promise.all(
+      allIds.map((playerId) =>
+        prisma.player.update({
           where: { id: playerId },
           data: { status: "WAITING", gamesPlayed: { increment: 1 }, waitStartedAt: completedAt },
-        });
-      }
-      await syncFinishedMatchLogs(tx, {
-        sessionId: id,
+        })
+      )
+    );
+    await prisma.playerLog.deleteMany({
+      where: {
         matchId,
-        courtNumber: match.courtNumber,
-        completedAt,
-        winningTeam,
-        players: match.players.map((player) => ({ playerId: player.playerId, team: player.team })),
-      });
-      for (const team of [teamA, teamB]) {
-        if (team.length === 2) await bumpRelationship(tx, id, team[0], team[1], "partner");
-      }
-      for (const a of teamA) for (const b of teamB) await bumpRelationship(tx, id, a, b, "opponent");
+        type: { in: ["MATCH_WON", "MATCH_LOST", "MATCH_DRAW", "MATCH_CANCELED"] },
+      },
     });
+    await prisma.playerLog.createMany({
+      data: match.players.map((player) => ({
+        sessionId: id,
+        playerId: player.playerId,
+        matchId,
+        type: getPlayerLogType(player.team, winningTeam),
+        message: `Finished match on Court ${match.courtNumber}.`,
+        createdAt: completedAt,
+      })),
+    });
+    for (const team of [teamA, teamB]) {
+      if (team.length === 2) await bumpRelationship(id, team[0], team[1], "partner", completedAt);
+    }
+    for (const a of teamA) for (const b of teamB) await bumpRelationship(id, a, b, "opponent", completedAt);
 
     return NextResponse.json({ ok: true });
   } catch (error) {

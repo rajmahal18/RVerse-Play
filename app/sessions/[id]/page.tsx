@@ -23,7 +23,14 @@ import {
   Zap,
 } from "lucide-react";
 import { Button, Input, Pill, Section, Select, Textarea } from "@/components/ui";
-import { evaluateMatchup, generateMatchQueue, type MatchmakingRelationship, type MatchmakingSessionConfig, type MatchmakingWaitingPlayer } from "@/lib/matchmaking";
+import {
+  applyLateArrivalQueueContext,
+  evaluateMatchup,
+  generateMatchQueue,
+  type MatchmakingRelationship,
+  type MatchmakingSessionConfig,
+  type MatchmakingWaitingPlayer,
+} from "@/lib/matchmaking";
 
 type Player = {
   id: string;
@@ -148,6 +155,15 @@ async function readJsonSafe(res: Response) {
   }
 }
 
+async function requestJsonSafe(input: RequestInfo | URL, init?: RequestInit) {
+  try {
+    const res = await fetch(input, init);
+    return { res, data: await readJsonSafe(res), error: null };
+  } catch {
+    return { res: null, data: null, error: "Connection lost. Please try again." };
+  }
+}
+
 export default function SessionPage({ params }: { params: Promise<{ id: string }> }) {
   const [sessionId, setSessionId] = useState("");
   const [session, setSession] = useState<Session | null>(null);
@@ -184,13 +200,16 @@ export default function SessionPage({ params }: { params: Promise<{ id: string }
 
   async function load(id = sessionId) {
     if (!id) return;
-    const res = await fetch(`/api/sessions/${id}`, { cache: "no-store" });
-    const data = await res.json();
+    const { res, data, error: requestError } = await requestJsonSafe(`/api/sessions/${id}`, { cache: "no-store" });
+    if (!res) {
+      if (!session) setError(requestError || "Could not open session.");
+      return;
+    }
     if (!res.ok) {
       setError(data?.error || "Could not open session.");
       return;
     }
-    setSession(data);
+    setSession(data as unknown as Session);
   }
 
   useEffect(() => {
@@ -286,7 +305,20 @@ export default function SessionPage({ params }: { params: Promise<{ id: string }
         rotationMode: session.rotationMode as "FAIR_ROTATION" | "SKILL_BALANCED" | "WINNER_STAYS" | "LOCKED_PAIRS",
         skillBalancing: session.skillBalancing,
       },
-      waitingPlayers: waiting.map((player) => ({ ...player, waitStartedAt: new Date(player.waitStartedAt) })),
+      waitingPlayers: applyLateArrivalQueueContext({
+        waitingPlayers: waiting.map((player) => ({
+          ...player,
+          waitStartedAt: new Date(player.waitStartedAt),
+          createdAt: new Date(player.createdAt),
+        })),
+        players: activePlayers.map((player) => ({
+          id: player.id,
+          status: player.status,
+          gamesPlayed: player.gamesPlayed,
+          createdAt: new Date(player.createdAt),
+        })),
+        matches: session.matches.map((match) => ({ startedAt: new Date(match.startedAt) })),
+      }),
       relationships: session.relationships.map((relationship) => ({
         ...relationship,
         lastPartnerAt: relationship.lastPartnerAt ? new Date(relationship.lastPartnerAt) : null,
@@ -299,7 +331,7 @@ export default function SessionPage({ params }: { params: Promise<{ id: string }
       score: generated.score,
       reasons: generated.reasons,
     }));
-  }, [session, waiting]);
+  }, [activePlayers, session, waiting]);
   useEffect(() => {
     if (isQueueEditing) return;
     setQueueDrafts(toQueueDrafts(queuedMatchups));
@@ -325,8 +357,24 @@ export default function SessionPage({ params }: { params: Promise<{ id: string }
     [session],
   );
   const matchmakingWaiting = useMemo<MatchmakingWaitingPlayer[]>(
-    () => waiting.map((player) => ({ ...player, waitStartedAt: new Date(player.waitStartedAt) })),
-    [waiting],
+    () =>
+      session
+        ? applyLateArrivalQueueContext({
+            waitingPlayers: waiting.map((player) => ({
+              ...player,
+              waitStartedAt: new Date(player.waitStartedAt),
+              createdAt: new Date(player.createdAt),
+            })),
+            players: activePlayers.map((player) => ({
+              id: player.id,
+              status: player.status,
+              gamesPlayed: player.gamesPlayed,
+              createdAt: new Date(player.createdAt),
+            })),
+            matches: session.matches.map((match) => ({ startedAt: new Date(match.startedAt) })),
+          })
+        : [],
+    [activePlayers, session, waiting],
   );
 
   const gameStats = useMemo(() => {
@@ -368,14 +416,13 @@ export default function SessionPage({ params }: { params: Promise<{ id: string }
     if (!names.trim()) return;
     setError("");
     setBusyAction("addPlayers");
-    const res = await fetch(`/api/sessions/${sessionId}/players`, {
+    const { res, data, error: requestError } = await requestJsonSafe(`/api/sessions/${sessionId}/players`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ names, skillLevel }),
     });
-    const data = await readJsonSafe(res);
-    if (!res.ok) {
-      setError(data?.error || "Could not add players.");
+    if (!res || !res.ok) {
+      setError(requestError || data?.error || "Could not add players.");
       setBusyAction(null);
       return;
     }
@@ -388,11 +435,12 @@ export default function SessionPage({ params }: { params: Promise<{ id: string }
   async function updatePlayer(playerId: string, status: Player["status"]) {
     if (!session?.viewerCanManage) return;
     setPendingPlayerId(playerId);
-    await fetch(`/api/sessions/${sessionId}/players/${playerId}`, {
+    const { res, data, error: requestError } = await requestJsonSafe(`/api/sessions/${sessionId}/players/${playerId}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ status }),
     });
+    if (!res || !res.ok) setError(requestError || data?.error || "Could not update player.");
     setPendingPlayerId(null);
     void load();
   }
@@ -409,16 +457,15 @@ export default function SessionPage({ params }: { params: Promise<{ id: string }
     setShowGenerateChoice(false);
     setBusyAction("generate");
     setError("");
-    const res = await fetch(`/api/sessions/${sessionId}/generate`, {
+    const { res, data, error: requestError } = await requestJsonSafe(`/api/sessions/${sessionId}/generate`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ mode }),
     });
-    const data = await readJsonSafe(res);
-    if (!res.ok) setError(data?.error || "Could not generate match");
+    if (!res || !res.ok) setError(requestError || data?.error || "Could not generate match");
     setBusyAction(null);
     void load();
-    setTab("courts");
+    if (res?.ok) setTab("courts");
   }
 
   async function startQueuedMatch(index: number) {
@@ -428,16 +475,15 @@ export default function SessionPage({ params }: { params: Promise<{ id: string }
     setBusyAction("startQueued");
     setQueuedStartingIndex(index);
     setError("");
-    const res = await fetch(`/api/sessions/${sessionId}/generate`, {
+    const { res, data, error: requestError } = await requestJsonSafe(`/api/sessions/${sessionId}/generate`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ teamAIds: draft.teamAIds, teamBIds: draft.teamBIds }),
     });
-    const data = await readJsonSafe(res);
-    if (!res.ok) setError(data?.error || "Could not start queued match");
+    if (!res || !res.ok) setError(requestError || data?.error || "Could not start queued match");
     setBusyAction(null);
     setQueuedStartingIndex(null);
-    if (res.ok) {
+    if (res?.ok) {
       void load();
       setTab("courts");
     }
@@ -517,13 +563,12 @@ export default function SessionPage({ params }: { params: Promise<{ id: string }
     setSavingPairs(true);
     setError("");
     const pairs = pairDrafts.filter((pair) => pair.playerAId && pair.playerBId && pair.playerAId !== pair.playerBId);
-    const res = await fetch(`/api/sessions/${sessionId}/pairs`, {
+    const { res, data, error: requestError } = await requestJsonSafe(`/api/sessions/${sessionId}/pairs`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ pairs }),
     });
-    const data = await readJsonSafe(res);
-    if (!res.ok) setError(data?.error || "Could not save fixed pairs.");
+    if (!res || !res.ok) setError(requestError || data?.error || "Could not save fixed pairs.");
     else setPairDraftsDirty(false);
     setSavingPairs(false);
     void load();
@@ -533,14 +578,13 @@ export default function SessionPage({ params }: { params: Promise<{ id: string }
     if (!session?.viewerCanManage) return;
     setPendingMatchId(matchId);
     setResultMatch(null);
-    const res = await fetch(`/api/sessions/${sessionId}/matches/${matchId}/finish`, {
+    const { res, data, error: requestError } = await requestJsonSafe(`/api/sessions/${sessionId}/matches/${matchId}/finish`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ action: "FINISH", result }),
     });
-    const data = await readJsonSafe(res);
-    if (!res.ok) {
-      setError(data?.error || "Could not finish match.");
+    if (!res || !res.ok) {
+      setError(requestError || data?.error || "Could not finish match.");
       setPendingMatchId(null);
       return;
     }
@@ -553,14 +597,13 @@ export default function SessionPage({ params }: { params: Promise<{ id: string }
     if (!session?.viewerCanManage) return;
     setPendingMatchId(matchId);
     setResultMatch(null);
-    const res = await fetch(`/api/sessions/${sessionId}/matches/${matchId}/finish`, {
+    const { res, data, error: requestError } = await requestJsonSafe(`/api/sessions/${sessionId}/matches/${matchId}/finish`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ action: "CANCEL" }),
     });
-    const data = await readJsonSafe(res);
-    if (!res.ok) {
-      setError(data?.error || "Could not cancel match.");
+    if (!res || !res.ok) {
+      setError(requestError || data?.error || "Could not cancel match.");
       setPendingMatchId(null);
       return;
     }
@@ -572,14 +615,13 @@ export default function SessionPage({ params }: { params: Promise<{ id: string }
   async function updateHistoryMatchResult(matchId: string, result: MatchResultChoice) {
     if (!session?.viewerCanManage) return;
     setPendingMatchId(matchId);
-    const res = await fetch(`/api/sessions/${sessionId}/matches/${matchId}`, {
+    const { res, data, error: requestError } = await requestJsonSafe(`/api/sessions/${sessionId}/matches/${matchId}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ result }),
     });
-    const data = await readJsonSafe(res);
-    if (!res.ok) {
-      setError(data?.error || "Could not update match result.");
+    if (!res || !res.ok) {
+      setError(requestError || data?.error || "Could not update match result.");
       setPendingMatchId(null);
       return;
     }
@@ -593,12 +635,11 @@ export default function SessionPage({ params }: { params: Promise<{ id: string }
     if (!session?.viewerCanManage) return;
     if (!window.confirm("Delete this finished match from history?")) return;
     setPendingMatchId(matchId);
-    const res = await fetch(`/api/sessions/${sessionId}/matches/${matchId}`, {
+    const { res, data, error: requestError } = await requestJsonSafe(`/api/sessions/${sessionId}/matches/${matchId}`, {
       method: "DELETE",
     });
-    const data = await readJsonSafe(res);
-    if (!res.ok) {
-      setError(data?.error || "Could not delete match.");
+    if (!res || !res.ok) {
+      setError(requestError || data?.error || "Could not delete match.");
       setPendingMatchId(null);
       return;
     }
@@ -611,7 +652,7 @@ export default function SessionPage({ params }: { params: Promise<{ id: string }
   async function saveSettings(formData: FormData) {
     if (!session?.viewerCanManage) return;
     setSavingSettings(true);
-    await fetch(`/api/sessions/${sessionId}`, {
+    const { res, data, error: requestError } = await requestJsonSafe(`/api/sessions/${sessionId}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -621,6 +662,7 @@ export default function SessionPage({ params }: { params: Promise<{ id: string }
         skillBalancing: formData.get("skillBalancing") === "on",
       }),
     });
+    if (!res || !res.ok) setError(requestError || data?.error || "Could not save settings.");
     setSavingSettings(false);
     void load();
   }
@@ -629,13 +671,12 @@ export default function SessionPage({ params }: { params: Promise<{ id: string }
     if (!session?.viewerCanManage) return;
     if (!window.confirm("End this session?")) return;
     setEndingSession(true);
-    const res = await fetch(`/api/sessions/${sessionId}`, {
+    const { res, data, error: requestError } = await requestJsonSafe(`/api/sessions/${sessionId}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ action: "end" }),
     });
-    const data = await readJsonSafe(res);
-    if (!res.ok) setError(data?.error || "Could not end session.");
+    if (!res || !res.ok) setError(requestError || data?.error || "Could not end session.");
     setEndingSession(false);
     void load();
   }

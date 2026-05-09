@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import type { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import {
   getPlayerResult,
@@ -30,28 +31,27 @@ export async function PATCH(req: Request, { params }: Params) {
 
     const winningTeam = getWinningTeamFromResult(result);
     const completedAt = match.endedAt ?? new Date();
+    const db = prisma as unknown as Prisma.TransactionClient;
 
-    await prisma.$transaction(async (tx) => {
-      await tx.match.update({
-        where: { id: matchId },
-        data: { winningTeam, endedAt: completedAt },
+    await prisma.match.update({
+      where: { id: matchId },
+      data: { winningTeam, endedAt: completedAt },
+    });
+
+    for (const player of match.players) {
+      await prisma.matchPlayer.update({
+        where: { id: player.id },
+        data: { result: getPlayerResult(player.team, winningTeam) },
       });
+    }
 
-      for (const player of match.players) {
-        await tx.matchPlayer.update({
-          where: { id: player.id },
-          data: { result: getPlayerResult(player.team, winningTeam) },
-        });
-      }
-
-      await syncFinishedMatchLogs(tx, {
-        sessionId: id,
-        matchId,
-        courtNumber: match.courtNumber,
-        completedAt,
-        winningTeam,
-        players: match.players.map((player) => ({ playerId: player.playerId, team: player.team })),
-      });
+    await syncFinishedMatchLogs(db, {
+      sessionId: id,
+      matchId,
+      courtNumber: match.courtNumber,
+      completedAt,
+      winningTeam,
+      players: match.players.map((player) => ({ playerId: player.playerId, team: player.team })),
     });
 
     return NextResponse.json({ ok: true });
@@ -74,13 +74,12 @@ export async function DELETE(_: Request, { params }: Params) {
     });
     if (!match || match.sessionId !== id) return NextResponse.json({ error: "Match not found" }, { status: 404 });
     if (match.status !== "FINISHED") return NextResponse.json({ error: "Only finished matches can be deleted from history." }, { status: 400 });
+    const db = prisma as unknown as Prisma.TransactionClient;
 
-    await prisma.$transaction(async (tx) => {
-      await tx.playerLog.deleteMany({ where: { matchId } });
-      await tx.match.delete({ where: { id: matchId } });
-      await syncSessionGamesPlayed(tx, id);
-      await syncSessionRelationships(tx, id);
-    });
+    await prisma.playerLog.deleteMany({ where: { matchId } });
+    await prisma.match.delete({ where: { id: matchId } });
+    await syncSessionGamesPlayed(db, id);
+    await syncSessionRelationships(db, id);
 
     return NextResponse.json({ ok: true });
   } catch (error) {

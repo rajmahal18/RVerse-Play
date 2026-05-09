@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import type { Match, Player } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
-import { generateMatchQueue } from "@/lib/matchmaking";
+import { applyLateArrivalQueueContext, generateMatchQueue } from "@/lib/matchmaking";
 import { ensureSessionIsActive, requireSessionEditor } from "@/lib/sessions";
 
 type Params = { params: Promise<{ id: string }> };
@@ -52,11 +52,22 @@ export async function POST(_: Request, { params }: Params) {
       reasons: [],
     }];
   } else {
-    const relationships = await prisma.playerRelationship.findMany({ where: { sessionId: id } });
+    const [relationships, playersForQueueContext, matchesForQueueContext] = await Promise.all([
+      prisma.playerRelationship.findMany({ where: { sessionId: id } }),
+      prisma.player.findMany({
+        where: { sessionId: id, status: { not: "LEFT" } },
+        select: { id: true, status: true, gamesPlayed: true, createdAt: true },
+      }),
+      prisma.match.findMany({ where: { sessionId: id }, select: { startedAt: true } }),
+    ]);
     const requestedMatches = body?.mode === "OPEN" ? openCourts : Math.max(1, Math.min(openCourts, Number(body?.count || 1)));
     generatedMatches = generateMatchQueue({
       session,
-      waitingPlayers,
+      waitingPlayers: applyLateArrivalQueueContext({
+        waitingPlayers,
+        players: playersForQueueContext,
+        matches: matchesForQueueContext,
+      }),
       relationships,
       maxMatches: Math.max(1, Math.min(openCourts, requestedMatches)),
       now: new Date(),
@@ -71,39 +82,36 @@ export async function POST(_: Request, { params }: Params) {
     if (!usedCourts.has(courtNumber)) courtNumbers.push(courtNumber);
   }
 
-  const matches = await prisma.$transaction(async (tx) => {
-    const createdMatches = [];
-    for (const [index, generated] of generatedMatches.entries()) {
-      const courtNumber = courtNumbers[index];
-      const allPlayers = [...generated.teamA, ...generated.teamB];
-      const created = await tx.match.create({
-        data: {
-          sessionId: id,
-          courtNumber,
-          players: {
-            create: [
-              ...generated.teamA.map((p) => ({ playerId: p.id, team: "A" as const })),
-              ...generated.teamB.map((p) => ({ playerId: p.id, team: "B" as const })),
-            ],
-          },
+  const matches = [];
+  for (const [index, generated] of generatedMatches.entries()) {
+    const courtNumber = courtNumbers[index];
+    const allPlayers = [...generated.teamA, ...generated.teamB];
+    const created = await prisma.match.create({
+      data: {
+        sessionId: id,
+        courtNumber,
+        players: {
+          create: [
+            ...generated.teamA.map((p) => ({ playerId: p.id, team: "A" as const })),
+            ...generated.teamB.map((p) => ({ playerId: p.id, team: "B" as const })),
+          ],
         },
-        include: { players: { include: { player: true } } },
-      });
-      await tx.player.updateMany({ where: { id: { in: allPlayers.map((p) => p.id) } }, data: { status: "PLAYING" } });
-      await tx.playerLog.createMany({
-        data: allPlayers.map((player) => ({
-          sessionId: id,
-          playerId: player.id,
-          matchId: created.id,
-          type: "MATCH_STARTED",
-          message: `Started match on Court ${courtNumber}.`,
-          createdAt: created.startedAt,
-        })),
-      });
-      createdMatches.push(created);
-    }
-    return createdMatches;
-  });
+      },
+      include: { players: { include: { player: true } } },
+    });
+    await prisma.player.updateMany({ where: { id: { in: allPlayers.map((p) => p.id) } }, data: { status: "PLAYING" } });
+    await prisma.playerLog.createMany({
+      data: allPlayers.map((player) => ({
+        sessionId: id,
+        playerId: player.id,
+        matchId: created.id,
+        type: "MATCH_STARTED",
+        message: `Started match on Court ${courtNumber}.`,
+        createdAt: created.startedAt,
+      })),
+    });
+    matches.push(created);
+  }
 
   return NextResponse.json({ match: matches[0], matches, generated: generatedMatches[0], generatedMatches });
 }

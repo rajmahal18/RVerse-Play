@@ -1,6 +1,11 @@
-import type { Player, PlayerRelationship, Session } from "@prisma/client";
+import type { Match, Player, PlayerRelationship, Session } from "@prisma/client";
 
-type WaitingPlayer = Pick<Player, "id" | "name" | "skillLevel" | "gamesPlayed" | "waitStartedAt">;
+type WaitingPlayer = Pick<Player, "id" | "name" | "skillLevel" | "gamesPlayed" | "waitStartedAt"> & {
+  lateArrivalOffset?: number;
+  lateQueuePenalty?: boolean;
+};
+type QueueContextPlayer = Pick<Player, "id" | "status" | "gamesPlayed" | "createdAt">;
+type QueueContextMatch = Pick<Match, "startedAt">;
 type PairRel = Pick<PlayerRelationship, "playerAId" | "playerBId" | "partnerCount" | "opponentCount" | "lastPartnerAt"> & {
   lockedPair?: boolean;
 };
@@ -28,6 +33,8 @@ const CANDIDATE_POOL_SIZE = 16;
 const PARTNER_REPEAT_PRIORITY = 12000;
 const OPPONENT_REPEAT_PRIORITY = 10000;
 const REPEAT_COUNT_WEIGHT = 650;
+const LATE_PROTECTED_GAME_LEAD = 2;
+const LATE_QUEUE_PENALTY = 250000;
 
 function relKey(a: string, b: string) {
   return [a, b].sort().join(":");
@@ -37,8 +44,17 @@ function getRel(map: Map<string, PairRel>, a: string, b: string) {
   return map.get(relKey(a, b));
 }
 
+function effectiveGamesPlayed(player: WaitingPlayer) {
+  return player.gamesPlayed + (player.lateArrivalOffset ?? 0);
+}
+
 function sortWaitingPlayers(players: WaitingPlayer[]) {
-  return [...players].sort((a, b) => a.waitStartedAt.getTime() - b.waitStartedAt.getTime() || a.gamesPlayed - b.gamesPlayed);
+  return [...players].sort(
+    (a, b) =>
+      Number(Boolean(a.lateQueuePenalty)) - Number(Boolean(b.lateQueuePenalty)) ||
+      effectiveGamesPlayed(a) - effectiveGamesPlayed(b) ||
+      a.waitStartedAt.getTime() - b.waitStartedAt.getTime(),
+  );
 }
 
 function combos<T>(arr: T[], size: number): T[][] {
@@ -97,12 +113,13 @@ function scoreMatch(params: {
   let score = 0;
   const reasons: string[] = [];
   const all = [...params.teamA, ...params.teamB];
-  const gameSpread = Math.max(...all.map((player) => player.gamesPlayed)) - Math.min(...all.map((player) => player.gamesPlayed));
+  const gameSpread = Math.max(...all.map(effectiveGamesPlayed)) - Math.min(...all.map(effectiveGamesPlayed));
   score += gameSpread * 30;
 
   for (const player of all) {
-    score += (player.gamesPlayed - params.minGames) * 40;
+    score += (effectiveGamesPlayed(player) - params.minGames) * 40;
     score -= Math.min(waitingMinutes(player, params.now), 60) * 1.5;
+    if (player.lateQueuePenalty) score += LATE_QUEUE_PENALTY;
   }
 
   const partnerPairs: [WaitingPlayer, WaitingPlayer][] = [
@@ -151,7 +168,7 @@ export function generateBestMatch(params: {
   if (waiting.length < 4) return null;
 
   const relMap = new Map(params.relationships.map((r) => [relKey(r.playerAId, r.playerBId), r]));
-  const minGames = Math.min(...waiting.map((p) => p.gamesPlayed));
+  const minGames = Math.min(...waiting.map(effectiveGamesPlayed));
   const candidatePool = waiting.slice(0, Math.min(CANDIDATE_POOL_SIZE, waiting.length));
   const shouldBalanceSkills = params.session.skillBalancing || params.session.rotationMode === "SKILL_BALANCED";
 
@@ -226,6 +243,41 @@ export function generateMatchQueue(params: {
   return queue;
 }
 
+function apparentGamesPlayed(player: QueueContextPlayer) {
+  return player.gamesPlayed + (player.status === "PLAYING" ? 1 : 0);
+}
+
+export function applyLateArrivalQueueContext<T extends WaitingPlayer & Pick<Player, "createdAt">>(params: {
+  waitingPlayers: T[];
+  players: QueueContextPlayer[];
+  matches: QueueContextMatch[];
+}): WaitingPlayer[] {
+  const firstMatchStart = params.matches.reduce<Date | null>(
+    (earliest, match) => (!earliest || match.startedAt < earliest ? match.startedAt : earliest),
+    null,
+  );
+  if (!firstMatchStart) return params.waitingPlayers;
+
+  const activePlayers = params.players.filter((player) => player.status !== "LEFT");
+  const onTimePlayers = activePlayers.filter((player) => player.createdAt <= firstMatchStart);
+  if (!onTimePlayers.length) return params.waitingPlayers;
+
+  const onTimePlayersHaveStarted = onTimePlayers.every((player) => apparentGamesPlayed(player) > 0);
+  const minOnTimeGames = Math.min(...onTimePlayers.map(apparentGamesPlayed));
+  const lateArrivalOffset = onTimePlayersHaveStarted ? Math.max(0, minOnTimeGames - LATE_PROTECTED_GAME_LEAD) : 0;
+
+  return params.waitingPlayers.map((player) => {
+    const isLate = player.createdAt > firstMatchStart;
+    if (!isLate) return player;
+
+    return {
+      ...player,
+      lateArrivalOffset,
+      lateQueuePenalty: !onTimePlayersHaveStarted,
+    };
+  });
+}
+
 export function evaluateMatchup(params: {
   session: MatchmakingSessionConfig;
   teamA: WaitingPlayer[];
@@ -236,7 +288,7 @@ export function evaluateMatchup(params: {
 }) {
   const now = params.now ?? new Date();
   const relMap = new Map(params.relationships.map((relationship) => [relKey(relationship.playerAId, relationship.playerBId), relationship]));
-  const minGames = Math.min(...params.waitingPlayers.map((player) => player.gamesPlayed));
+  const minGames = Math.min(...params.waitingPlayers.map(effectiveGamesPlayed));
   const shouldBalanceSkills = params.session.skillBalancing || params.session.rotationMode === "SKILL_BALANCED";
 
   return scoreMatch({

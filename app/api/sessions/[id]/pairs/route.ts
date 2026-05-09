@@ -1,5 +1,4 @@
 import { NextResponse } from "next/server";
-import type { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { orderedPair } from "@/lib/matchmaking";
 import { ensureSessionIsActive, requireSessionEditor } from "@/lib/sessions";
@@ -37,17 +36,15 @@ export async function PUT(req: Request, { params }: Params) {
       normalizedPairs.push(orderedPair(left, right));
     }
 
-    const relationships = await prisma.$transaction(async (tx: Prisma.TransactionClient) => {
-      await tx.playerRelationship.updateMany({ where: { sessionId: id, lockedPair: true }, data: { lockedPair: false } });
-      for (const pair of normalizedPairs) {
-        await tx.playerRelationship.upsert({
-          where: { sessionId_playerAId_playerBId: { sessionId: id, ...pair } },
-          create: { sessionId: id, ...pair, lockedPair: true },
-          update: { lockedPair: true },
-        });
-      }
-      return tx.playerRelationship.findMany({ where: { sessionId: id } });
-    });
+    await prisma.playerRelationship.updateMany({ where: { sessionId: id, lockedPair: true }, data: { lockedPair: false } });
+    for (const pair of normalizedPairs) {
+      await prisma.playerRelationship.upsert({
+        where: { sessionId_playerAId_playerBId: { sessionId: id, ...pair } },
+        create: { sessionId: id, ...pair, lockedPair: true },
+        update: { lockedPair: true },
+      });
+    }
+    const relationships = await prisma.playerRelationship.findMany({ where: { sessionId: id } });
 
     return NextResponse.json({ relationships });
   } catch (error) {

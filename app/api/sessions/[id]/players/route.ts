@@ -26,24 +26,26 @@ export async function POST(req: Request, { params }: Params) {
     return NextResponse.json({ error: "Invalid skill level." }, { status: 400 });
   }
   const arrivedAt = new Date();
-  const players = await prisma.$transaction(async (tx) => {
-    const createdPlayers = [];
-    for (const name of names) {
-      const player = await tx.player.create({
-        data: { sessionId: id, name, skillLevel, status: "WAITING", waitStartedAt: arrivedAt },
-      });
-      createdPlayers.push(player);
-    }
-    await tx.playerLog.createMany({
-      data: createdPlayers.map((player) => ({
-        sessionId: id,
-        playerId: player.id,
-        type: "ARRIVED",
-        message: "Added to the player list.",
-        createdAt: player.createdAt,
-      })),
-    });
-    return createdPlayers;
-  });
+  const players = await Promise.all(
+    names.map((name) =>
+      prisma.player.create({
+        data: {
+          sessionId: id,
+          name,
+          skillLevel,
+          status: "WAITING",
+          waitStartedAt: arrivedAt,
+          logs: {
+            create: {
+              sessionId: id,
+              type: "ARRIVED",
+              message: "Added to the player list.",
+              createdAt: arrivedAt,
+            },
+          },
+        },
+      })
+    )
+  );
   return NextResponse.json(players);
 }

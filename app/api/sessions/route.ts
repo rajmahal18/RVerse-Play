@@ -40,57 +40,54 @@ export async function POST(req: Request) {
   const hostJoinsAsPlayer = Boolean(body.hostJoinsAsPlayer);
   const joinCode = await generateUniqueJoinCode();
   try {
-    const session = await prisma.$transaction(async (tx) => {
-      if (!isAdmin(user)) {
-        const debit = await tx.user.updateMany({
-          where: { id: user.id, creditBalance: { gte: SESSION_CREATE_CREDIT_COST } },
-          data: { creditBalance: { decrement: SESSION_CREATE_CREDIT_COST } },
-        });
+    if (!isAdmin(user)) {
+      const debit = await prisma.user.updateMany({
+        where: { id: user.id, creditBalance: { gte: SESSION_CREATE_CREDIT_COST } },
+        data: { creditBalance: { decrement: SESSION_CREATE_CREDIT_COST } },
+      });
 
-        if (debit.count !== 1) {
-          throw new Error("INSUFFICIENT_CREDITS");
-        }
+      if (debit.count !== 1) {
+        throw new Error("INSUFFICIENT_CREDITS");
       }
+    }
 
-      const session = await tx.session.create({
-        data: {
-          ownerId: user.id,
-          name,
-          joinCode,
-          courtCount,
-          rotationMode: body.rotationMode || "FAIR_ROTATION",
-          skillBalancing: Boolean(body.skillBalancing ?? true),
-          players: hostJoinsAsPlayer
-            ? {
-                create: {
-                  userId: user.id,
-                  name: getUserPlayerName(user),
-                  skillLevel: "LOW_INTERMEDIATE",
-                  status: "WAITING",
-                  waitStartedAt: new Date(),
-                },
-              }
-            : undefined,
+    const session = await prisma.session.create({
+      data: {
+        ownerId: user.id,
+        name,
+        joinCode,
+        courtCount,
+        rotationMode: body.rotationMode || "FAIR_ROTATION",
+        skillBalancing: Boolean(body.skillBalancing ?? true),
+        players: hostJoinsAsPlayer
+          ? {
+              create: {
+                userId: user.id,
+                name: getUserPlayerName(user),
+                skillLevel: "LOW_INTERMEDIATE",
+                status: "WAITING",
+                waitStartedAt: new Date(),
+              },
+            }
+          : undefined,
+      },
+      include: {
+        players: {
+          where: { userId: user.id },
+          select: { id: true },
         },
-        include: {
-          players: {
-            where: { userId: user.id },
-            select: { id: true },
-          },
+      },
+    });
+    if (hostJoinsAsPlayer && session.players[0]?.id) {
+      await prisma.playerLog.create({
+        data: {
+          sessionId: session.id,
+          playerId: session.players[0].id,
+          type: "ARRIVED",
+          message: "Host joined as a player.",
         },
       });
-      if (hostJoinsAsPlayer && session.players[0]?.id) {
-        await tx.playerLog.create({
-          data: {
-            sessionId: session.id,
-            playerId: session.players[0].id,
-            type: "ARRIVED",
-            message: "Host joined as a player.",
-          },
-        });
-      }
-      return session;
-    });
+    }
 
     const response = NextResponse.json(session);
     response.cookies.set(getSessionAccessCookieName(session.id), createSessionAccessToken(session.id, joinCode), {
